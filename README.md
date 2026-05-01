@@ -2,7 +2,7 @@
 
 > A principled, layered qutebrowser configuration — built like software, not a script.
 
-**153 tests · 6 layers · 8 core modules · 4 strategy modules · 4 policy modules · 17 themes · NixOS-ready**
+**153 tests · 6 layers · 8 core modules · 4 strategy modules · 4 policy modules · 18 themes · NixOS-ready**
 
 ---
 
@@ -134,12 +134,17 @@ USER_EXTRA_ALIASES  = {}          # {name: command}
 
 `catppuccin-mocha` · `catppuccin-latte` · `gruvbox-dark` · `tokyo-night` · `rose-pine`
 
-### Extended (12)
+### Extended (13)
 
 `nord` · `dracula` · `solarized-dark` · `solarized-light` · `one-dark` · `everforest-dark`
 `gruvbox-light` · `modus-vivendi` · `catppuccin-macchiato` · `catppuccin-frappe` · `kanagawa` · `palenight`
+`glass`
 
-Set `THEME = "kanagawa"` in `config.py`. Add your own to `themes/extended.py`.
+| Theme   | Aesthetic                                                                                                                                                                                      |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `glass` | Modern · minimal · premium — deep cold substrate (`#0d0f14`), frosted-glass panel (`#161b26`), ice-blue accent (`#7ab8f5`), soft-violet secondary (`#9d8fe8`). Desaturated semantics. No neon. |
+
+Set `THEME = "glass"` in `config.py`. Add your own to `themes/extended.py`.
 
 ---
 
@@ -225,7 +230,7 @@ qutebrowser-config/
 │
 ├── strategies/  merge.py · profile.py · search.py · download.py
 ├── policies/    content.py · network.py · security.py · host.py
-├── themes/      extended.py  (12 extra themes)
+├── themes/      extended.py  (13 extra themes)
 ├── keybindings/ catalog.py   (query + conflict detection)
 │
 ├── scripts/
@@ -296,7 +301,8 @@ Subclass `HealthCheck` in `core/health.py`, then `.add(MyCheck())` to `HealthChe
 - **Fix**: `appearance.py` — `_font_settings()` now uses `ColorScheme.font_size_ui` (was hard-coded `"10pt"`)
 - **Fix**: `behavior.py` — removed invalid `downloads.open_dispatcher: None`
 - **Fix**: `privacy.py` — updated Chrome UA version (134→124)
-- **New themes**: `catppuccin-macchiato`, `catppuccin-frappe`, `kanagawa`, `palenight` (17 total)
+- **New themes**: `catppuccin-macchiato`, `catppuccin-frappe`, `kanagawa`, `palenight`, `glass` (18 total)
+  - `glass`: modern · minimal · premium frosted-glass aesthetic; deep cold substrate + ice-blue accent
 - **New bindings**: prompt mode, hint escape, window management (`,n`, `,N`)
 - **New engines**: `npm`, `dh` (Docker Hub), `tf` (Terraform) in dev search set
 - **22 new tests** (total: **153**)

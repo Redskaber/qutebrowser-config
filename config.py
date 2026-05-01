@@ -8,7 +8,7 @@ It is intentionally thin: it wires the architecture and delegates
 all real work to the ConfigOrchestrator.
 
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  To customize your qutebrowser, edit the CONFIGURATION SECTION below.   ║
+║  To customize your qutebrowser, edit the CONFIGURATION SECTION below.    ║
 ║  That is the ONLY section you need to touch.                             ║
 ║  All other files are architecture — extend, don't edit them.             ║
 ╚══════════════════════════════════════════════════════════════════════════╝
@@ -87,11 +87,15 @@ logger = logging.getLogger("qute.config")
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
-# Built-in:  catppuccin-mocha | catppuccin-latte | gruvbox-dark | tokyo-night | rose-pine
-# Extended:  nord | dracula | solarized-dark | solarized-light | one-dark
-#            everforest-dark | gruvbox-light | modus-vivendi
+# Built-in (5):
+#   catppuccin-mocha | catppuccin-latte | gruvbox-dark | tokyo-night | rose-pine
+# Extended (13):
+#   nord | dracula | solarized-dark | solarized-light | one-dark
+#   everforest-dark | gruvbox-light | modus-vivendi
+#   catppuccin-macchiato | catppuccin-frappe | kanagawa | palenight
+#   glass  ← modern · minimal · premium; frosted-glass / Gaussian-blur aesthetic
 # Custom:    add to themes/extended.py, then use the name here
-THEME = "catppuccin-mocha"
+THEME = "glass"
 
 # ── Privacy ───────────────────────────────────────────────────────────────────
 # STANDARD  → sensible defaults, minimal breakage

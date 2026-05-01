@@ -14,6 +14,12 @@ To add a custom theme:
 
 All hex values are lowercase #rrggbb CSS colors.
 Font values are Qt font family names.
+
+Themes in this file:
+  nord, dracula, solarized-dark, solarized-light, catppuccin-frappe,
+  everforest-dark, kanagawa, palenight,
+  glass  — frosted-glass / Gaussian-blur aesthetic; deep cold substrate,
+           ice-blue accents, desaturated semantics. Modern. Minimal. Premium.
 """
 
 from __future__ import annotations
@@ -161,6 +167,61 @@ EXTENDED_THEMES: Dict[str, ColorScheme] = {
         select_bg="#34384e", select_fg="#a6accd",
         font_mono="JetBrainsMono Nerd Font", font_sans="Noto Sans",
         font_size_ui="10pt", font_size_web="16px",
+    ),
+
+    # ──────────────────────────────────────────────────────────────────
+    # glass — Modern · Minimal · Premium
+    # ──────────────────────────────────────────────────────────────────
+    #
+    # Design language: frosted glass / Gaussian-blur aesthetic.
+    #
+    # Palette strategy:
+    #   bg        — near-opaque deep cold-black (#0d0f14): the "substrate"
+    #               behind the frosted panel; maximally recedes.
+    #   bg_alt    — pure obsidian (#080a0e): alternating rows / deeper wells.
+    #   bg_surface— translucent midnight (#161b26 @ ~60% opacity feel):
+    #               the "glass panel" itself — noticeably lighter than bg,
+    #               cool blue-black, suggests depth without neon.
+    #   fg        — cool silver-white (#c8d4e8): primary readable text,
+    #               high contrast yet not eye-straining paper-white.
+    #   fg_dim    — blue-grey slate (#4a5568): recedes cleanly; used for
+    #               decorative chrome (scrollbars, inactive hints, timestamps).
+    #   fg_strong — pure white (#f0f4ff): emphatic labels, selected items.
+    #   accent    — ice blue (#7ab8f5): primary interactive element;
+    #               cold, luminous, unmistakable against the dark substrate.
+    #   accent2   — soft violet (#9d8fe8): secondary / match highlight;
+    #               harmonises with ice blue without competing.
+    #   success   — desaturated sage (#6db88a): muted, not neon.
+    #   warning   — warm sand (#c9a84c): readable, not alarming.
+    #   error     — dusty rose (#d96b7a): signals danger without screaming.
+    #   info      — pale cyan (#5bbcd4): informational, cool family.
+    #
+    # Hints: dark panel bg + ice-blue border keeps them scannable but
+    #        visually anchored in the glass layer, not floating.
+    # Select: deep navy (#1e2d45) tinted selection, accent border rails.
+    #
+    "glass": ColorScheme(
+        bg          = "#0d0f14",   # substrate — deep cold-black
+        bg_alt      = "#080a0e",   # obsidian well
+        bg_surface  = "#161b26",   # frosted panel — blue-black midnight
+        fg          = "#c8d4e8",   # cool silver-white
+        fg_dim      = "#4a5568",   # receding blue-grey slate
+        fg_strong   = "#f0f4ff",   # pure emphasis white
+        accent      = "#7ab8f5",   # ice blue — primary interactive
+        accent2     = "#9d8fe8",   # soft violet — secondary / match
+        success     = "#6db88a",   # desaturated sage
+        warning     = "#c9a84c",   # warm sand
+        error       = "#d96b7a",   # dusty rose
+        info        = "#5bbcd4",   # pale cyan
+        hint_bg     = "#161b26",   # glass panel bg for hint overlay
+        hint_fg     = "#7ab8f5",   # ice-blue hint labels — crisp, scannable
+        hint_border = "#7ab8f5",   # matching border — unified ice rail
+        select_bg   = "#1e2d45",   # deep navy tint selection
+        select_fg   = "#f0f4ff",   # strong white on selection
+        font_mono   = "JetBrainsMono Nerd Font",
+        font_sans   = "Noto Sans",
+        font_size_ui  = "10pt",
+        font_size_web = "16px",
     ),
 }
 
