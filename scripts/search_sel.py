@@ -8,27 +8,38 @@ Opens the current text selection in a search engine.
 Supports multiple search targets via --engine argument.
 
 Usage (add to USER_EXTRA_BINDINGS or BehaviorLayer):
-    (",/",  "spawn --userscript search_sel.py",              "normal")
-    (",//", "spawn --userscript search_sel.py --engine ddg", "normal")
-    (",g",  "spawn --userscript search_sel.py --engine g",   "normal")
-    (",G",  "spawn --userscript search_sel.py --engine gh",  "normal")
+    (",/",  "spawn --userscript search_sel.py --tab",           "normal")
+    (",sg", "spawn --userscript search_sel.py --engine g --tab","normal")
+    (",sw", "spawn --userscript search_sel.py --engine w --tab","normal")
 
 Environment (injected by qutebrowser):
-    QUTE_SELECTED_TEXT  — the selected text
-    QUTE_FIFO           — path to qutebrowser FIFO
+    QUTE_SELECTED_TEXT  — primary selection (X11) or caret-mode selection
+    QUTE_FIFO           — path to qutebrowser command FIFO
 
-In caret mode, the selection is available after `y` or directly.
-In normal mode, this works on the primary selection (middle-click clipboard).
+Text resolution order:
+    1. QUTE_SELECTED_TEXT  (caret selection / X11 primary)
+    2. QUTE_CLIPBOARD      (Ctrl+C clipboard, --clipboard flag)
+    → if both empty: show warning, exit 0 (not an error)
 
-Engine shortcuts match qutebrowser's url.searchengines:
-    DEFAULT  → Brave Search (default)
+Exit codes:
+    0  — success OR no text available (user feedback via message-warning)
+    1  — script/system error (bad engine arg, unexpected exception)
+
+Engine shortcuts match url.searchengines in config.py / BaseLayer:
+    DEFAULT  → Brave Search
     g        → Google
     ddg      → DuckDuckGo
-    gh       → GitHub search
+    gh       → GitHub
     w        → Wikipedia
     yt       → YouTube
     nix      → NixOS packages
-    mdn      → MDN
+    mdn      → MDN Web Docs
+    crates   → crates.io
+    pypi     → PyPI
+    arxiv    → arXiv
+    sx       → SearXNG
+    bili     → Bilibili
+    zhihu    → Zhihu
 """
 
 from __future__ import annotations
@@ -40,14 +51,15 @@ from urllib.parse import quote_plus
 
 QUTE_FIFO          = os.environ.get("QUTE_FIFO", "")
 QUTE_SELECTED_TEXT = os.environ.get("QUTE_SELECTED_TEXT", "").strip()
+QUTE_CLIPBOARD     = os.environ.get("QUTE_CLIPBOARD", "").strip()
 QUTE_URL           = os.environ.get("QUTE_URL", "")
 
 
 # ─────────────────────────────────────────────
 # Engine URL Map
 # ─────────────────────────────────────────────
-# These should match url.searchengines in config.py / BaseLayer.
-# Duplicated here so the script is self-contained.
+# Duplicated here so the script is fully self-contained.
+# Keep in sync with url.searchengines in BaseLayer.
 ENGINES: dict[str, str] = {
     "DEFAULT": "https://search.brave.com/search?q={}",
     "g":       "https://www.google.com/search?q={}",
@@ -66,56 +78,101 @@ ENGINES: dict[str, str] = {
 }
 
 
+# ─────────────────────────────────────────────
+# FIFO communication
+# ─────────────────────────────────────────────
+
 def send(cmd: str) -> None:
+    """Write a single command line to the qutebrowser FIFO."""
     if QUTE_FIFO:
         with open(QUTE_FIFO, "w") as f:
             f.write(cmd + "\n")
 
 
-def error(msg: str) -> None:
+def warn(msg: str) -> None:
+    """User-facing warning (no text selected, etc.) — exits 0."""
+    send(f"message-warning '[search-sel] {msg}'")
+
+
+def fatal(msg: str) -> None:
+    """Script/system error — exits 1 so qutebrowser reports it."""
     send(f"message-error '[search-sel] {msg}'")
     sys.exit(1)
 
+
+# ─────────────────────────────────────────────
+# Engine resolution
+# ─────────────────────────────────────────────
+
+def resolve_engine(key: str) -> tuple[str, str]:
+    """
+    Return (canonical_key, url_template) for the given engine shortcut.
+    Falls back to DEFAULT for unknown keys (after case-insensitive retry).
+    Raises SystemExit(1) only if engine map is somehow empty.
+    """
+    if key in ENGINES:
+        return key, ENGINES[key]
+    # Case-insensitive fallback
+    lower_map = {k.lower(): (k, v) for k, v in ENGINES.items()}
+    if key.lower() in lower_map:
+        return lower_map[key.lower()]
+    # Unknown key → silently fall back to DEFAULT with a hint
+    send(f"message-warning '[search-sel] unknown engine {key!r}, using DEFAULT'")
+    return "DEFAULT", ENGINES["DEFAULT"]
+
+
+# ─────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Search selected text.")
     parser.add_argument(
         "--engine", "-e", default="DEFAULT",
-        help="Engine shortcut (DEFAULT, g, ddg, gh, w, yt, …)"
+        help="Engine shortcut (DEFAULT, g, ddg, gh, w, yt, …)",
     )
     parser.add_argument(
         "--tab", "-t", action="store_true",
-        help="Open in new tab (default: current tab)"
+        help="Open in new tab (default: current tab)",
+    )
+    parser.add_argument(
+        "--clipboard", "-c", action="store_true",
+        help="Use clipboard text instead of selection",
     )
     args = parser.parse_args()
 
-    text = QUTE_SELECTED_TEXT
-    if not text:
-        # Fallback: try QUTE_FIFO-based selection query isn't available;
-        # instruct user how to use caret mode selection
-        error("No text selected. Use caret mode (v) to select text first.")
-        return
-
-    engine_key = args.engine
-    if engine_key not in ENGINES:
-        # Try case-insensitive lookup
-        lower = {k.lower(): v for k, v in ENGINES.items()}
-        if engine_key.lower() in lower:
-            url_template = lower[engine_key.lower()]
-        else:
-            engine_key = "DEFAULT"
-            url_template = ENGINES["DEFAULT"]
+    # ── Text resolution ───────────────────────────────────────────────
+    # Priority: explicit --clipboard flag → QUTE_SELECTED_TEXT → QUTE_CLIPBOARD
+    if args.clipboard:
+        text = QUTE_CLIPBOARD
+        if not text:
+            warn("Clipboard is empty.")
+            return
     else:
-        url_template = ENGINES[engine_key]
+        text = QUTE_SELECTED_TEXT
+        if not text:
+            # Graceful fallback to clipboard
+            text = QUTE_CLIPBOARD
+        if not text:
+            # No selection, no clipboard — inform user and exit cleanly (0)
+            warn("No text selected. Select text first (caret mode: v), or use --clipboard.")
+            return
 
+    # ── Engine lookup ─────────────────────────────────────────────────
+    engine_key, url_template = resolve_engine(args.engine)
+
+    # ── Build URL and open ────────────────────────────────────────────
     search_url = url_template.replace("{}", quote_plus(text))
-
-    open_cmd = "open -t" if args.tab else "open"
+    open_cmd   = "open -t" if args.tab else "open"
     send(f"{open_cmd} {search_url}")
-    send(f"message-info '[search-sel] {engine_key}: {text[:40]}'")
+    send(f"message-info '[search-sel] {engine_key}: {text[:50]!r}'")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:  # pragma: no cover
+        fatal(f"unexpected error: {exc}")
+
 
 

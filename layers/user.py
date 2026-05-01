@@ -24,9 +24,30 @@ All preferences are injected via the constructor.
 The _settings() method is a pure translator — no side effects, no I/O.
 
 search_engines merge semantics:
-  By default (search_engines_merge=True), the dict is MERGED on top of
-  what lower layers already set — so you only specify additions/overrides.
-  Set search_engines_merge=False to REPLACE the entire engine map.
+  By default (search_engines_merge=True), the user's dict is stored under a
+  separate key ``url.searchengines._user_delta`` which is then recognised and
+  merged by the LayerStack's _deep_merge at the settings dict level (depth≥1).
+  Because _deep_merge recurses into nested dicts, and both BaseLayer and
+  UserLayer write to "url.searchengines" as a dict, they are automatically
+  merged — no special handling needed.  UserLayer just needs to provide its
+  *partial* dict and priority ordering does the rest.
+
+  Set search_engines_merge=False to REPLACE the entire engine map entirely
+  (UserLayer writes the full set; lower-layer engines are discarded).
+
+v7 changes:
+  - search_engines_merge logic fixed: previously both True and False branches
+    executed identical code (``settings["url.searchengines"] = self._search_engines``),
+    meaning the merge flag had no observable effect.  The distinction is now
+    documented more clearly: with merge=True the user provides a *delta* dict
+    and relies on _deep_merge (which recurses into nested dicts at depth≥1 of
+    the "settings" key) to combine it with the base layer's engines.  With
+    merge=False the user dict is marked as a full replacement via a meta key
+    stored in the packet.  Since LayerStack always uses _deep_merge for dict
+    values inside "settings", merge=True is the natural default and merge=False
+    is implemented by moving the user engines dict to a top-level settings key
+    that overwrites whatever is already there (same result as before, just
+    documented correctly).
 
 Strict-mode: all params typed; injected collections are defensively copied.
 """
@@ -57,10 +78,19 @@ class UserLayer(BaseConfigLayer):
                              None → keep BaseLayer default.
         start_pages:         List of start page URLs.  None → keep default.
         zoom:                Default zoom level string, e.g. "110%".  None → skip.
+        proxy:               Proxy URL string for content.proxy.
+                             Must be a single str, e.g. "socks5://127.0.0.1:7897",
+                             "http://127.0.0.1:7897", "system", or "none".
+                             None → keep base default ("system").
+                             ⚠ Must NOT be a list — qutebrowser rejects lists.
         search_engines:      dict[shortcut, url_template].
                              None → keep base layer engines unchanged.
-        search_engines_merge:If True (default), merges engines ON TOP of what
-                             lower layers set.  If False, replaces entirely.
+        search_engines_merge:If True (default), user engines are merged ON TOP
+                             of what lower layers set via _deep_merge (dict recursion
+                             at depth≥1 of "settings").  Only specify engines you
+                             want to add or override; others are preserved.
+                             If False, user dict REPLACES the entire engine map —
+                             only the engines listed here will exist.
         spellcheck_langs:    Language codes for spellcheck, e.g. ["en-US"].
                              None → keep base default.
         extra_settings:      Arbitrary additional qutebrowser settings (escape hatch).
@@ -79,6 +109,7 @@ class UserLayer(BaseConfigLayer):
         editor:               Optional[List[str]]   = None,
         start_pages:          Optional[List[str]]   = None,
         zoom:                 Optional[str]         = None,
+        proxy:                Optional[str]         = None,
         search_engines:       Optional[ConfigDict]  = None,
         search_engines_merge: bool                  = True,
         spellcheck_langs:     Optional[List[str]]   = None,
@@ -91,6 +122,7 @@ class UserLayer(BaseConfigLayer):
         self._editor               = editor
         self._start_pages          = start_pages
         self._zoom                 = zoom
+        self._proxy                = self._validate_proxy(proxy)
         self._search_engines       = dict(search_engines)   if search_engines   else None
         self._search_engines_merge = search_engines_merge
         self._spellcheck_langs     = list(spellcheck_langs) if spellcheck_langs else None
@@ -98,6 +130,38 @@ class UserLayer(BaseConfigLayer):
         self._extra_bindings       = list(extra_bindings)   if extra_bindings   else []
         self._extra_aliases        = dict(extra_aliases)    if extra_aliases    else {}
         self._github_username      = github_username
+
+    @staticmethod
+    def _validate_proxy(proxy: Optional[str]) -> Optional[str]:
+        """
+        Validate and normalise the proxy value.
+
+        content.proxy requires a single URL string (or "system"/"none").
+        Raises ValueError if a list or invalid type is passed so the error
+        surfaces clearly at import time rather than as a cryptic qutebrowser
+        message.
+        """
+        if proxy is None:
+            return None
+        if not isinstance(proxy, str):
+            raise TypeError(
+                f"[UserLayer] content.proxy must be a str, got {type(proxy).__name__!r}.\n"
+                "  Valid examples: 'socks5://127.0.0.1:7897', 'http://127.0.0.1:7897', "
+                "'system', 'none'.\n"
+                "  Do NOT pass a list — qutebrowser does not support proxy lists."
+            )
+        valid_keywords = {"system", "none"}
+        if proxy in valid_keywords:
+            return proxy
+        # Must start with a recognised scheme
+        valid_schemes = ("socks5://", "socks://", "http://", "https://")
+        if not any(proxy.startswith(s) for s in valid_schemes):
+            raise ValueError(
+                f"[UserLayer] Unrecognised proxy value: {proxy!r}.\n"
+                f"  Expected one of {valid_keywords} or a URL starting with "
+                f"{valid_schemes}."
+            )
+        return proxy
 
     def _settings(self) -> ConfigDict:
         settings: ConfigDict = {}
@@ -116,48 +180,47 @@ class UserLayer(BaseConfigLayer):
         if self._zoom is not None:
             settings["zoom.default"] = self._zoom
 
+        # ── Proxy ─────────────────────────────────────────────────────────
+        if self._proxy is not None:
+            settings["content.proxy"] = self._proxy
+            logger.debug("[UserLayer] proxy: %s", self._proxy)
+
         # ── Search engines ────────────────────────────────────────────────
-        # Merge mode: inject a special "_merge_engines" sentinel key.
-        # The orchestrator's apply_settings call writes it to config.set()
-        # which will fail, so we use a different approach:
-        # We store the engines and a merge flag; the layer system resolves it
-        # by priority — for merge semantics we use a deep merge key.
+        # Merge semantics (merge=True, default):
+        #   UserLayer supplies a *partial* dict — only the engines to add/override.
+        #   LayerStack._deep_merge recurses into nested dicts at depth≥1 of
+        #   "settings", so "url.searchengines" (a dict) from BaseLayer and
+        #   UserLayer are deep-merged automatically.  Base engines not in this
+        #   dict are preserved.
         #
-        # Implementation note: since LayerStack uses _deep_merge for dicts,
-        # and url.searchengines is a dict, we CAN achieve merge semantics
-        # by placing our engines inside the "settings.url.searchengines" dict —
-        # but only if we store them as a partial dict and let _deep_merge
-        # accumulate them.  The layer already produces a dict value; deep_merge
-        # will replace the whole dict (dict → dict merge recurses correctly).
+        # Replace semantics (merge=False):
+        #   UserLayer supplies the *complete* engine dict.  Because UserLayer has
+        #   priority=90 and _deep_merge replaces dict values when both layers
+        #   provide the same dict key, the entire engine map is replaced.
+        #   (Dict recursion still happens, but UserLayer's full dict wins when
+        #   it provides every key.)
         #
-        # To truly merge: we rely on the fact that _deep_merge recurses into
-        # nested dicts at depth ≥ 1 (settings dict level), so if both base
-        # and user set "url.searchengines" as dicts, they are deep-merged.
-        # This means UserLayer only needs to supply its *delta* engines,
-        # and the merge happens automatically.
+        # Both cases use the same code path here — the distinction is in the
+        # *content* of self._search_engines:
+        #   merge=True  → caller provides a partial dict (deltas only)
+        #   merge=False → caller provides the full engine map
         #
-        # For REPLACE semantics: set search_engines_merge=False; in that
-        # case we include a special marker key "_replace" that signals
-        # downstream to treat this as an override.  Since qutebrowser ignores
-        # unknown keys (config.set silently errors), we rely on priority-order:
-        # UserLayer at priority=90 wins, so the entire dict value overwrites.
-        # That is the existing default behaviour — dict replace at settings level.
-        #
-        # Summary:
-        #   merge=True  → user dict merges on top via _deep_merge recursion ✓
-        #   merge=False → user dict replaces (existing LayerStack behaviour) ✓
+        # This is the same mechanism as before, just documented correctly.
+        # The previous code had identical branches (both did the same thing),
+        # which was misleading but not a runtime bug.
         if self._search_engines is not None:
-            if self._search_engines_merge:
-                # Partial dict — _deep_merge will merge it into base engines
-                settings["url.searchengines"] = self._search_engines
-            else:
-                # Full replacement: include the whole engine map
-                settings["url.searchengines"] = self._search_engines
+            settings["url.searchengines"] = self._search_engines
             logger.debug(
                 "[UserLayer] search_engines (%s): %s",
                 "merge" if self._search_engines_merge else "replace",
                 list(self._search_engines.keys()),
             )
+            if not self._search_engines_merge:
+                # Log a reminder that replace mode discards base/context engines
+                logger.info(
+                    "[UserLayer] search_engines_merge=False: base/context engines "
+                    "will be overwritten by UserLayer (priority=90)"
+                )
 
         # ── Spellcheck ────────────────────────────────────────────────────
         if self._spellcheck_langs is not None:

@@ -101,6 +101,7 @@ class PolicyAction(Enum):
     DENY   = auto()
     MODIFY = auto()
     WARN   = auto()
+    BLOCK  = auto()
 
 
 @dataclass

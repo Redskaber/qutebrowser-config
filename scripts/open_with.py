@@ -54,9 +54,19 @@ def info(msg: str) -> None:
     send(f"message-info '[open-with] {msg}'")
 
 
-def error(msg: str) -> None:
+def warn(msg: str) -> None:
+    """User-facing warning — exits 0 (not a script error)."""
+    send(f"message-warning '[open-with] {msg}'")
+
+
+def fatal(msg: str) -> None:
+    """Script/system error — exits 1 so qutebrowser reports it."""
     send(f"message-error '[open-with] {msg}'")
     sys.exit(1)
+
+
+# Backward-compatible alias
+error = fatal
 
 
 # ─────────────────────────────────────────────
@@ -197,6 +207,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # pragma: no cover
+        fatal(f"unexpected error: {exc}")
 
 

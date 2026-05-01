@@ -6,20 +6,22 @@ Context Switch Userscript
 
 Switches the active qutebrowser browsing context and reloads config.
 
-Usage (via keybindings in config.py):
-  ,Cd  → dev context
-  ,Cw  → work context
-  ,Cr  → research context
-  ,Cm  → media context
-  ,C0  → default context
+Usage (via keybindings registered in ContextLayer):
+  ,Cd   → dev      context
+  ,Cw   → work     context
+  ,Cr   → research context
+  ,Cm   → media    context
+  ,Cwt  → writing  context   (NEW v6)
+  ,C0   → default  context
 
 How it works:
   1. Reads the requested context from argv[1]
-  2. Writes QUTE_CONTEXT=<context> to a persistent file (~/.config/qutebrowser/.context)
-  3. Sends :config-source to reload config (which reads the file)
-  4. Shows a message with the new context
+  2. Writes the context name to ~/.config/qutebrowser/.context
+  3. Sends :config-source to trigger a config reload
+  4. Shows a confirmation message in the browser
 
-The context file is read by ContextLayer._resolve_active_mode() at load time.
+The context file is read by ContextLayer._resolve_active_mode() at load time
+(priority 3 in the resolution chain, after the constructor param and env var).
 
 qutebrowser userscript interface:
   QUTE_FIFO       — write commands here
@@ -48,38 +50,64 @@ def _context_file() -> str:
     return os.path.join(config_dir, ".context")
 
 
-VALID_CONTEXTS = {"default", "work", "research", "media", "dev"}
+VALID_CONTEXTS = {"default", "work", "research", "media", "dev", "writing"}
+
+_CONTEXT_LABELS = {
+    "default":  "Default (base settings)",
+    "work":     "Work — corporate tools & search",
+    "research": "Research — arXiv, Scholar, Wikipedia",
+    "media":    "Media — YouTube, Bilibili, autoplay ON",
+    "dev":      "Dev — GitHub, MDN, crates, npm",
+    "writing":  "Writing — focus, dict, thesaurus",
+}
+
+
+def _warn(msg: str) -> None:
+    """User-facing warning — exits 0."""
+    _fifo_cmd(f"message-warning 'context_switch: {msg}'")
+
+
+def _fatal(msg: str) -> None:
+    """Script/system error — exits 1."""
+    _fifo_cmd(f"message-error 'context_switch: {msg}'")
+    sys.exit(1)
 
 
 def main() -> None:
     if len(sys.argv) < 2:
-        _fifo_cmd("message-error 'context_switch: no context given'")
-        sys.exit(1)
+        _warn(f"no context given — valid: {sorted(VALID_CONTEXTS)}")
+        return
 
     requested = sys.argv[1].lower().strip()
 
     if requested not in VALID_CONTEXTS:
-        _fifo_cmd(
-            f"message-error 'context_switch: unknown context {requested!r}  "
-            f"valid: {sorted(VALID_CONTEXTS)}'"
+        _warn(
+            f"unknown context {requested!r} — "
+            f"valid: {sorted(VALID_CONTEXTS)}"
         )
-        sys.exit(1)
+        return
 
     # Persist the context choice
     try:
         with open(_context_file(), "w") as f:
             f.write(requested)
     except OSError as exc:
-        _fifo_cmd(f"message-error 'context_switch: write failed: {exc}'")
-        sys.exit(1)
+        _fatal(f"write failed: {exc}")
+        return
 
-    # Set env var for the CURRENT session (takes effect on next :config-source)
+    # Set env var for the CURRENT session (read on next :config-source)
     os.environ["QUTE_CONTEXT"] = requested
 
     # Reload config and show confirmation
+    label = _CONTEXT_LABELS.get(requested, requested)
     _fifo_cmd("config-source")
-    _fifo_cmd(f"message-info 'Context switched to: {requested}'")
+    _fifo_cmd(f"message-info 'Context → {label}'")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # pragma: no cover
+        _fatal(f"unexpected error: {exc}")

@@ -36,7 +36,6 @@ from core.pipeline import (
     PipeStage,
     TransformStage,
     ValidateStage,
-    ConditionalStage,
 )
 from core.protocol import (
     CommandBus,
@@ -90,7 +89,7 @@ __all__ = [
     "LifecycleHook", "LifecycleManager",
     # pipeline
     "ConfigPacket", "LogStage", "MergeStage", "Pipeline",
-    "PipeStage", "TransformStage", "ValidateStage", "ConditionalStage",
+    "PipeStage", "TransformStage", "ValidateStage",
     # protocol — events
     "CommandBus", "EventBus", "MessageRouter", "QueryBus",
     "Event", "Command", "Query",

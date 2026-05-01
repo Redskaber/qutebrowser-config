@@ -40,9 +40,19 @@ def send(cmd: str) -> None:
             f.write(cmd + "\n")
 
 
-def error(msg: str) -> None:
+def warn(msg: str) -> None:
+    """User-facing warning (no entry found etc.) — exits 0."""
+    send(f"message-warning '[pass] {msg}'")
+
+
+def fatal(msg: str) -> None:
+    """Script/system error — exits 1."""
     send(f"message-error '[pass] {msg}'")
     sys.exit(1)
+
+
+# Backward-compatible alias; callers use fatal() below for real errors
+error = fatal
 
 
 def run(cmd: list[str]) -> str:
@@ -124,16 +134,19 @@ def main() -> None:
     args = parser.parse_args()
 
     if not QUTE_URL:
-        error("QUTE_URL not set")
+        fatal("QUTE_URL not set")
+        return
 
     hostname = urlparse(QUTE_URL).hostname or ""
     if not hostname:
-        error(f"Cannot parse hostname from: {QUTE_URL}")
+        fatal(f"Cannot parse hostname from: {QUTE_URL}")
+        return
 
     if args.otp:
         otp = run(["pass", "otp", hostname])
         if not otp:
-            error(f"No OTP entry for {hostname}")
+            warn(f"No OTP entry for {hostname}")
+            return
         to_clipboard(otp)
         send(f"message-info '[pass] OTP copied for {hostname}'")
         # Fill the focused input field
@@ -143,7 +156,8 @@ def main() -> None:
 
     entry_text = find_entry(hostname)
     if not entry_text:
-        error(f"No pass entry for {hostname}")
+        warn(f"No pass entry for {hostname}")
+        return
 
     data = parse_pass_output(entry_text)
     password = data.get("password", "")
@@ -166,6 +180,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # pragma: no cover
+        fatal(f"unexpected error: {exc}")
 
 

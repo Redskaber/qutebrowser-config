@@ -1,7 +1,7 @@
 """
 orchestrator.py
 ===============
-Configuration Orchestrator  (composition root)  v5
+Configuration Orchestrator  (composition root)  v7
 
 Responsibilities:
   1. Build the LayerStack
@@ -12,7 +12,15 @@ Responsibilities:
   6. Apply per-host overrides via HostPolicyRegistry
   7. Register QueryBus handlers for introspection
 
-v5 changes:
+v7 changes:
+  - apply_host_policies: when HostPolicyRegistry is active, BehaviorLayer
+    host_policies() are only applied for patterns NOT already covered by
+    the registry.  This eliminates silent double-application of the same
+    per-host rules (previously localhost was applied twice).
+  - Orchestrator version bumped to v7 (was v5 — inconsistency fixed)
+  - summary() now shows host registry details via registry.summary()
+
+v6 / v5 changes (retained):
   - QueryBus handlers for GetMergedConfigQuery and GetHealthReportQuery
   - emit_health() called after HealthChecker.check()
   - ContextSwitchedEvent emitted when ContextLayer is active
@@ -25,7 +33,7 @@ Principle: single wiring point, explicit dependency injection.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from core.layer import LayerStack
 from core.lifecycle import LifecycleHook, LifecycleManager
@@ -261,9 +269,8 @@ class ConfigOrchestrator:
         """
         Resolve all layers into a merged config.
 
-        FSM path: IDLE → LOADING → VALIDATING → APPLYING
+        FSM transitions: IDLE → LOADING → VALIDATING → APPLYING (ready for apply)
         """
-        logger.info("[Orchestrator] build() starting")
         self._fsm.send(ConfigEvent.START_LOAD)
 
         try:
@@ -393,10 +400,19 @@ class ConfigOrchestrator:
 
         Sources (applied in order):
           1. HostPolicyRegistry (from policies/host.py) — structured, queryable
-          2. BehaviorLayer.host_policies() — legacy list for backwards compat
+          2. BehaviorLayer.host_policies() — only patterns NOT already in registry
+
+        v7 deduplication fix:
+          Previously BehaviorLayer and HostPolicyRegistry both emitted rules for
+          the same patterns (e.g. localhost, *.google.com), causing config.set()
+          to be called twice for the same key/pattern.  Now BehaviorLayer rules are
+          skipped for any pattern already covered by the registry.
         """
         all_errors: List[str] = []
         rule_count = 0
+
+        # Track patterns applied by HostPolicyRegistry so we can skip duplicates
+        registry_patterns: Set[str] = set()
 
         # ── Source 1: HostPolicyRegistry ──────────────────────────────────
         if self._host_registry is not None:
@@ -408,18 +424,27 @@ class ConfigOrchestrator:
                         "[Orchestrator] host-registry: %s  (%s)",
                         rule.pattern, rule.description,
                     )
+                registry_patterns.add(rule.pattern)
                 rule_count += 1
 
         # ── Source 2: BehaviorLayer.host_policies() ───────────────────────
+        # Only apply patterns not already handled by HostPolicyRegistry.
         from layers.behavior import BehaviorLayer
         behavior = self._stack.get("behavior")
         if isinstance(behavior, BehaviorLayer):
             for policy in behavior.host_policies():
+                if policy.pattern in registry_patterns:
+                    logger.debug(
+                        "[Orchestrator] skip duplicate BehaviorLayer rule: %s"
+                        " (already in HostPolicyRegistry)",
+                        policy.pattern,
+                    )
+                    continue
                 errors = applier.apply_host_policy(policy.pattern, policy.settings)
                 all_errors.extend(errors)
                 if not errors:
                     logger.info(
-                        "[Orchestrator] host-policy: %s  (%s)",
+                        "[Orchestrator] host-policy (behavior): %s  (%s)",
                         policy.pattern, policy.description,
                     )
                 rule_count += 1
@@ -454,7 +479,7 @@ class ConfigOrchestrator:
 
         lines = [
             "─" * 60,
-            "ConfigOrchestrator Summary",
+            "ConfigOrchestrator Summary (v7)",
             "─" * 60,
             self._stack.summary(),
             f"\nFSM: {self._fsm}",
@@ -465,7 +490,12 @@ class ConfigOrchestrator:
                 f"{n_binds} keybindings  {n_alias} aliases"
             )
         if n_hosts:
-            lines.append(f"Host rules: {n_hosts} (from HostPolicyRegistry)")
+            reg_summary = (
+                self._host_registry.summary()
+                if hasattr(self._host_registry, "summary")
+                else str(n_hosts)
+            )
+            lines.append(f"Host rules: {reg_summary}")
         if self._last_report is not None:
             status = "✓ healthy" if self._last_report.ok else "✗ has errors"
             lines.append(f"Health: {status}  ({self._last_report.summary().splitlines()[0]})")

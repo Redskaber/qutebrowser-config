@@ -70,6 +70,59 @@ class ReferrerPolicy(Policy):
         return None
 
 
+class ProxyFormatPolicy(Policy):
+    """
+    Guard: content.proxy must be a single str, never a list.
+
+    qutebrowser's content.proxy setting accepts exactly one URL string
+    (or the keywords "system"/"none").  Passing a list causes the error:
+      "expected a value of type str but got list"
+
+    This policy intercepts the mistake early and either:
+      - MODIFY: coerce list → first element (best-effort recovery), or
+      - BLOCK:  reject entirely if the list is empty or malformed.
+    """
+    name     = "proxy_format_policy"
+    priority = 1   # run before ProxyPolicy (priority=5)
+
+    def evaluate(self, key: str, value: Any, context: ConfigDict) -> Optional[PolicyDecision]:
+        if key != "content.proxy":
+            return None
+        if not isinstance(value, list):
+            return None   # str/None: handled by ProxyPolicy
+        if not value:
+            return PolicyDecision(
+                action=PolicyAction.BLOCK,
+                reason=(
+                    "[ProxyFormat] content.proxy received an empty list — "
+                    "must be a str like 'socks5://host:port' or 'system'."
+                ),
+            )
+        first = value[0]
+        if not isinstance(first, str):
+            return PolicyDecision(
+                action=PolicyAction.BLOCK,
+                reason=(
+                    f"[ProxyFormat] content.proxy list contains non-str element: "
+                    f"{first!r}."
+                ),
+            )
+        logger.warning(
+            "[ProxyFormat] content.proxy was a list %r; "
+            "coercing to first element %r.  "
+            "Fix config.py: set USER_PROXY = %r (a single str).",
+            value, first, first,
+        )
+        return PolicyDecision(
+            action=PolicyAction.MODIFY,
+            reason=(
+                f"[ProxyFormat] list coerced → {first!r}. "
+                "Set USER_PROXY to a single str to suppress this warning."
+            ),
+            modified_value=first,
+        )
+
+
 class ProxyPolicy(Policy):
     """
     PARANOID: enforce Tor SOCKS5 proxy.
@@ -123,6 +176,7 @@ class HttpsOnlyPolicy(Policy):
 def build_network_policy_chain(profile: PrivacyProfile) -> PolicyChain:
     """Return a PolicyChain for network-level controls."""
     chain = PolicyChain()
+    chain.add(ProxyFormatPolicy())          # priority=1: catch list before ProxyPolicy
     chain.add(DnsPrefetchPolicy(profile))
     chain.add(ReferrerPolicy(profile))
     chain.add(ProxyPolicy(profile))

@@ -19,6 +19,15 @@ Principles:
 
 Pattern: Chain of Responsibility + Decorator
 
+v7 changes:
+  - ConfigPacket field default_factory values corrected:
+      field(default_factory=ConfigDict)   → field(default_factory=dict)
+      field(default_factory=dict[str,Any])→ field(default_factory=dict)
+      field(default_factory=list[str])    → field(default_factory=list)
+    These were Pyright strict-mode errors: ``dict[str, Any]`` and
+    ``list[str]`` are generic aliases used for type hints, not callable
+    factories.  The correct factories are plain ``dict`` and ``list``.
+
 Strict-mode notes (Pyright):
   - Removed unused ``Generic`` and ``Optional`` imports.
   - ``_deep_merge`` annotated with explicit ``Dict[str, Any]`` signatures
@@ -58,10 +67,10 @@ class ConfigPacket:
     completely new key-set (e.g. key renaming).
     """
     source:   str            # origin label, e.g. "layer:base"
-    data:     ConfigDict     = field(default_factory=ConfigDict)
-    meta:     Dict[str, Any] = field(default_factory=dict[str, Any])
-    errors:   List[str]      = field(default_factory=list[str])
-    warnings: List[str]      = field(default_factory=list[str])
+    data:     ConfigDict     = field(default_factory=dict)   # v7 fix: was ConfigDict
+    meta:     Dict[str, Any] = field(default_factory=dict)   # v7 fix: was dict[str, Any]
+    errors:   List[str]      = field(default_factory=list)   # v7 fix: was list[str]
+    warnings: List[str]      = field(default_factory=list)   # v7 fix: was list[str]
 
     def with_data(self, extra: ConfigDict) -> "ConfigPacket":
         """Return a new packet with ``extra`` merged *on top of* current data."""
@@ -101,11 +110,12 @@ class ConfigPacket:
             warnings=self.warnings + [msg],
         )
 
-    def with_meta(self, **kw: Any) -> "ConfigPacket":
+    def with_meta(self, key: str, value: Any) -> "ConfigPacket":
+        new_meta = {**self.meta, key: value}
         return ConfigPacket(
             source=self.source,
             data=self.data.copy(),
-            meta={**self.meta, **kw},
+            meta=new_meta,
             errors=self.errors.copy(),
             warnings=self.warnings.copy(),
         )
@@ -114,261 +124,275 @@ class ConfigPacket:
     def ok(self) -> bool:
         return len(self.errors) == 0
 
+    def __repr__(self) -> str:
+        return (
+            f"ConfigPacket(source={self.source!r}, "
+            f"keys={list(self.data)[:5]}, "
+            f"errors={len(self.errors)}, "
+            f"warnings={len(self.warnings)})"
+        )
+
 
 # ─────────────────────────────────────────────
-# Stage Abstraction  (Dependency Inversion)
+# Pipeline Stage Abstraction
 # ─────────────────────────────────────────────
 class PipeStage(ABC):
-    """Base abstraction for a pipeline stage."""
+    """
+    Abstract pipeline stage.
+    Receives a packet, returns a (possibly modified) packet.
+    Raising an exception aborts the pipeline.
+    """
 
-    name: str = "unnamed"
+    @property
+    @abstractmethod
+    def name(self) -> str: ...
 
     @abstractmethod
-    def process(self, packet: ConfigPacket) -> ConfigPacket:
-        ...
+    def process(self, packet: ConfigPacket) -> ConfigPacket: ...
 
     def __repr__(self) -> str:
-        return f"<PipeStage:{self.name}>"
-
-
-class PipeFilter(PipeStage):
-    """Stage that conditionally passes or marks a packet."""
-
-    @abstractmethod
-    def should_pass(self, packet: ConfigPacket) -> bool:
-        ...
-
-    def process(self, packet: ConfigPacket) -> ConfigPacket:
-        if self.should_pass(packet):
-            return packet
-        return packet.with_warning(f"[{self.name}] packet filtered out")
+        return f"<Stage:{self.name}>"
 
 
 # ─────────────────────────────────────────────
-# Pipeline Engine
+# Pipeline
 # ─────────────────────────────────────────────
 class Pipeline:
     """
-    Composable, ordered pipeline of ``PipeStage`` instances.
+    Ordered chain of PipeStages.
 
     Usage::
 
         pipeline = (
-            Pipeline("config")
-            .pipe(ExpandEnvVars())
-            .pipe(ValidateKeys())
-            .pipe(MergeDefaults())
+            Pipeline("privacy")
+            .pipe(LogStage("pre"))
+            .pipe(ValidateStage({...}))
+            .pipe(LogStage("post"))
         )
         result = pipeline.run(packet)
     """
 
     def __init__(self, name: str = "pipeline") -> None:
-        self.name = name
+        self._name   = name
         self._stages: List[PipeStage] = []
-        self._hooks_pre:  List[Callable[[ConfigPacket], None]] = []
-        self._hooks_post: List[Callable[[ConfigPacket], None]] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
 
     def pipe(self, stage: PipeStage) -> "Pipeline":
-        """Append a stage and return ``self`` for fluent chaining."""
+        """Fluent: append a stage and return self."""
         self._stages.append(stage)
-        logger.debug("[%s] registered stage: %s", self.name, stage.name)
-        return self
-
-    def on_packet(self, hook: Callable[[ConfigPacket], None]) -> "Pipeline":
-        """Register a pre-run hook (observability, e.g. logging)."""
-        self._hooks_pre.append(hook)
-        return self
-
-    def after_packet(self, hook: Callable[[ConfigPacket], None]) -> "Pipeline":
-        """Register a post-run hook."""
-        self._hooks_post.append(hook)
         return self
 
     def run(self, packet: ConfigPacket) -> ConfigPacket:
         """
         Execute all stages in order.
-
-        Halts immediately when a stage raises an exception (the error is
-        captured in ``packet.errors``); warnings do NOT halt the pipeline.
+        Any stage that raises will propagate; the pipeline is aborted.
         """
         current = packet
-        for hook in self._hooks_pre:
-            hook(current)
-
         for stage in self._stages:
             try:
                 current = stage.process(current)
                 logger.debug(
-                    "[%s/%s] ok  keys=%d  errors=%d",
-                    self.name, stage.name,
-                    len(current.data), len(current.errors),
+                    "[Pipeline:%s] stage=%s ok=%s",
+                    self._name, stage.name, current.ok,
                 )
             except Exception as exc:
-                current = current.with_error(f"[{stage.name}] exception: {exc}")
-                logger.exception("[%s/%s] fatal — halting pipeline", self.name, stage.name)
-                break  # halt on unhandled exception
-
-        for hook in self._hooks_post:
-            hook(current)
+                logger.error(
+                    "[Pipeline:%s] stage=%s raised: %s",
+                    self._name, stage.name, exc,
+                )
+                raise
         return current
 
-    def __iter__(self) -> Iterator[PipeStage]:
-        return iter(self._stages)
+    def stages(self) -> Iterator[PipeStage]:
+        yield from self._stages
+
+    def __len__(self) -> int:
+        return len(self._stages)
 
     def __repr__(self) -> str:
-        stages = " → ".join(s.name for s in self._stages)
-        return f"<Pipeline:{self.name} [{stages}]>"
+        return f"<Pipeline:{self._name} stages={[s.name for s in self._stages]}>"
 
 
 # ─────────────────────────────────────────────
 # Built-in Stages
 # ─────────────────────────────────────────────
-class MergeStage(PipeStage):
-    """
-    Merge a static dict overlay into the packet data.
 
-    ``deep=True``  (default): nested dicts are merged recursively.
-    ``deep=False``: flat last-write-wins merge.
-    The overlay always wins over packet data for the same key.
-    """
-    name = "merge"
+class LogStage(PipeStage):
+    """Emit a debug log line; pass packet through unchanged."""
 
-    def __init__(self, overlay: ConfigDict, deep: bool = True) -> None:
-        self._overlay = overlay
-        self._deep = deep
+    def __init__(self, label: str = "") -> None:
+        self._label = label
+
+    @property
+    def name(self) -> str:
+        return f"log:{self._label}"
 
     def process(self, packet: ConfigPacket) -> ConfigPacket:
-        if self._deep:
-            merged = _deep_merge(packet.data, self._overlay)
-        else:
-            merged = {**packet.data, **self._overlay}
-        return ConfigPacket(
-            source=packet.source,
-            data=merged,
-            meta=packet.meta,
-            errors=packet.errors,
-            warnings=packet.warnings,
+        logger.debug(
+            "[LogStage:%s] source=%s keys=%d errors=%d",
+            self._label,
+            packet.source,
+            len(packet.data),
+            len(packet.errors),
         )
-
-
-class TransformStage(PipeStage):
-    """
-    Apply a pure function ``ConfigDict → ConfigDict`` to the packet data.
-
-    The function receives the *entire* current data dict and must return the
-    *entire* new data dict.  The packet data is **replaced** (not merged) with
-    the function's return value — this is correct for key-renaming or
-    structural transforms.
-
-    If the function raises, the error is recorded and the original packet is
-    returned unchanged (no halt — use a pipeline halt only for fatal stages).
-    """
-    name = "transform"
-
-    def __init__(
-        self,
-        fn: Callable[[ConfigDict], ConfigDict],
-        label: str = "transform",
-    ) -> None:
-        self._fn = fn
-        self.name = label
-
-    def process(self, packet: ConfigPacket) -> ConfigPacket:
-        try:
-            new_data = self._fn(packet.data)
-            # replace_data: fn owns the full output dict, do not merge with old.
-            return packet.replace_data(new_data)
-        except Exception as exc:
-            return packet.with_error(f"transform [{self.name}]: {exc}")
+        return packet
 
 
 class ValidateStage(PipeStage):
     """
-    Validate packet data against a set of predicate rules.
+    Run key-specific validators; add errors to packet on failure.
 
-    ``rules`` maps a dot-notation key to a ``Callable[[value], bool]``.
-    The stage looks up keys in ``packet.data`` **and** inside a nested
-    ``packet.data["settings"]`` dict (which is the structure layers produce).
-    Failures add warnings — they do NOT halt the pipeline.
+    Args:
+        rules: mapping of key → predicate(value) → bool
+               Predicate returns True if the value is valid.
+
+    Example::
+
+        ValidateStage({
+            "content.blocking.enabled": lambda v: isinstance(v, bool),
+            "content.cookies.accept": lambda v: v in ("all", "no-3rdparty", "never"),
+        })
+
+    The stage inspects both the top-level dict and ``data["settings"]`` so it
+    works correctly whether the packet carries a raw flat dict or the nested
+    structure produced by ``BaseConfigLayer.build()``.
     """
-    name = "validate"
 
     def __init__(self, rules: Dict[str, Callable[[Any], bool]]) -> None:
         self._rules = rules
 
+    @property
+    def name(self) -> str:
+        return "validate"
+
     def process(self, packet: ConfigPacket) -> ConfigPacket:
-        result = packet
-        # Support both flat packets and the nested {settings: {…}} structure.
-        flat:   ConfigDict = packet.data
-        nested: ConfigDict = packet.data.get("settings", {})  # type: ignore[assignment]
+        # Support both flat {"key": value} and nested {"settings": {"key": value}}
+        flat     = packet.data
+        settings = packet.data.get("settings", {})
 
-        for key, rule in self._rules.items():
-            val = flat.get(key) if key in flat else nested.get(key)
-            if val is not None and not rule(val):
-                result = result.with_warning(
-                    f"validation: {key}={val!r} failed rule"
+        errors: List[str] = []
+        for key, predicate in self._rules.items():
+            value = flat.get(key) if key in flat else settings.get(key)
+            if value is not None and not predicate(value):
+                errors.append(
+                    f"[ValidateStage] key={key!r} value={value!r} failed validation"
                 )
-        return result
+
+        if errors:
+            result = packet
+            for err in errors:
+                result = result.with_error(err)
+                logger.warning("[ValidateStage] %s", err)
+            return result
+
+        return packet
 
 
-class ConditionalStage(PipeStage):
-    """Apply ``inner`` stage only when ``predicate(packet)`` is True."""
-    name = "conditional"
+class TransformStage(PipeStage):
+    """
+    Apply a transform function to the packet's data dict.
+
+    Args:
+        fn:    (data: ConfigDict) → ConfigDict — must return a new dict.
+        label: descriptive name for logging.
+    """
 
     def __init__(
         self,
-        predicate: Callable[[ConfigPacket], bool],
-        inner: PipeStage,
+        fn:    Callable[[ConfigDict], ConfigDict],
+        label: str = "transform",
     ) -> None:
-        self._predicate = predicate
-        self._inner = inner
-        self.name = f"if({inner.name})"
-
-    def process(self, packet: ConfigPacket) -> ConfigPacket:
-        if self._predicate(packet):
-            return self._inner.process(packet)
-        return packet
-
-
-class LogStage(PipeStage):
-    """Observability tap — logs packet state without modification."""
-    name = "log"
-
-    def __init__(self, label: str = "") -> None:
-        self.name = f"log[{label}]" if label else "log"
+        self._fn    = fn
         self._label = label
 
+    @property
+    def name(self) -> str:
+        return f"transform:{self._label}"
+
     def process(self, packet: ConfigPacket) -> ConfigPacket:
-        logger.info(
-            "[%s] source=%s  keys=%d  errors=%d  warnings=%d",
-            self._label, packet.source,
-            len(packet.data), len(packet.errors), len(packet.warnings),
-        )
-        return packet
+        try:
+            new_data = self._fn(packet.data)
+            return packet.replace_data(new_data)
+        except Exception as exc:
+            logger.error("[TransformStage:%s] transform raised: %s", self._label, exc)
+            return packet.with_error(f"transform:{self._label}: {exc}")
+
+
+class FilterStage(PipeStage):
+    """
+    Remove keys from the data dict that fail a predicate.
+
+    Args:
+        predicate: (key, value) → bool — return True to KEEP the key.
+    """
+
+    def __init__(
+        self,
+        predicate: Callable[[str, Any], bool],
+        label:     str = "filter",
+    ) -> None:
+        self._predicate = predicate
+        self._label     = label
+
+    @property
+    def name(self) -> str:
+        return f"filter:{self._label}"
+
+    def process(self, packet: ConfigPacket) -> ConfigPacket:
+        filtered = {
+            k: v for k, v in packet.data.items()
+            if self._predicate(k, v)
+        }
+        removed = len(packet.data) - len(filtered)
+        if removed:
+            logger.debug("[FilterStage:%s] removed %d keys", self._label, removed)
+        return packet.replace_data(filtered)
+
+
+class MergeStage(PipeStage):
+    """
+    Merge a static overlay dict *on top of* the current packet data.
+    Useful for injecting last-minute defaults.
+    """
+
+    def __init__(self, overlay: ConfigDict, label: str = "merge") -> None:
+        self._overlay = overlay
+        self._label   = label
+
+    @property
+    def name(self) -> str:
+        return f"merge:{self._label}"
+
+    def process(self, packet: ConfigPacket) -> ConfigPacket:
+        merged = {**packet.data, **self._overlay}
+        return packet.replace_data(merged)
 
 
 # ─────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────
-def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
-    """Recursively merge ``overlay`` into ``base``.  Overlay wins."""
+
+@functools.lru_cache(maxsize=None)
+def _noop_pipeline() -> Pipeline:
+    """Return a shared empty pipeline (identity transform)."""
+    return Pipeline("noop")
+
+
+def _deep_merge(
+    base:    Dict[str, Any],
+    overlay: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Recursively merge *overlay* into *base*.  Overlay wins on conflicts."""
     result: Dict[str, Any] = base.copy()
     for k, v in overlay.items():
-        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-            v = cast(Dict[str, Any], v)
-            result[k] = _deep_merge(result[k], v)
+        existing = result.get(k)
+        if isinstance(existing, dict) and isinstance(v, dict):
+            existing = cast(Dict[str, Any], existing)
+            v_dict   = cast(Dict[str, Any], v)
+            result[k] = _deep_merge(existing, v_dict)
         else:
             result[k] = v
     return result
-
-
-def stage(label: str) -> Callable[[Callable[[ConfigDict], ConfigDict]], Callable[[], TransformStage]]:
-    """Decorator: wrap a plain function as a named ``TransformStage`` factory."""
-    def decorator(fn: Callable[[ConfigDict], ConfigDict]) -> Callable[[], TransformStage]:
-        @functools.wraps(fn)
-        def factory() -> TransformStage:
-            return TransformStage(fn, label=label)
-        return factory
-    return decorator
-
-

@@ -57,9 +57,19 @@ def info(msg: str) -> None:
     send(f"message-info '[tab-restore] {msg}'")
 
 
-def error(msg: str) -> None:
+def warn(msg: str) -> None:
+    """User-facing warning — exits 0."""
+    send(f"message-warning '[tab-restore] {msg}'")
+
+
+def fatal(msg: str) -> None:
+    """Script/system error — exits 1."""
     send(f"message-error '[tab-restore] {msg}'")
     sys.exit(1)
+
+
+# Backward-compatible alias
+error = warn  # tab-restore errors are mostly "not found" — user feedback, not crashes
 
 
 def session_dir() -> Path:
@@ -86,11 +96,15 @@ def do_save(name: str) -> None:
         return
 
     path = session_path(name)
-    with open(path, "w") as f:
-        f.write(f"# tab-restore session: {name}\n")
-        f.write(f"# saved: {datetime.now().isoformat(timespec='seconds')}\n")
-        for url in urls:
-            f.write(url + "\n")
+    try:
+        with open(path, "w") as f:
+            f.write(f"# tab-restore session: {name}\n")
+            f.write(f"# saved: {datetime.now().isoformat(timespec='seconds')}\n")
+            for url in urls:
+                f.write(url + "\n")
+    except OSError as exc:
+        fatal(f"write failed: {exc}")
+        return
 
     info(f"saved {len(urls)} tab(s) → {name}")
 
@@ -158,6 +172,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # pragma: no cover
+        fatal(f"unexpected error: {exc}")
 
 

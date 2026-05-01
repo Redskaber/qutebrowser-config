@@ -94,9 +94,19 @@ def send_command(cmd: str) -> None:
             f.write(cmd + "\n")
 
 
-def error(msg: str) -> None:
+def warn(msg: str) -> None:
+    """User-facing warning — exits 0."""
+    send_command(f"message-warning 'readability: {msg}'")
+
+
+def fatal(msg: str) -> None:
+    """Script/system error — exits 1."""
     send_command(f"message-error 'readability: {msg}'")
     sys.exit(1)
+
+
+# Backward-compatible alias
+error = fatal
 
 
 def main() -> None:
@@ -118,21 +128,21 @@ def main() -> None:
     content = doc.summary(html_partial=True)
 
     html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title}</title>
-  {READABLE_CSS}
-</head>
-<body>
-  <h1>{title}</h1>
-  <div id="reader-meta">
-    Source: <a href="{QUTE_URL}">{QUTE_URL}</a>
-  </div>
-  {content}
-</body>
-</html>"""
+            <html lang="en">
+            <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>{title}</title>
+            {READABLE_CSS}
+            </head>
+            <body>
+            <h1>{title}</h1>
+            <div id="reader-meta">
+                Source: <a href="{QUTE_URL}">{QUTE_URL}</a>
+            </div>
+            {content}
+            </body>
+            </html>"""
 
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -149,6 +159,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # pragma: no cover
+        fatal(f"unexpected error: {exc}")
 
 

@@ -1,7 +1,7 @@
 """
 config.py
 =========
-qutebrowser Configuration Entry Point  (v5)
+qutebrowser Configuration Entry Point  (v7)
 
 This is the **only** file qutebrowser loads directly.
 It is intentionally thin: it wires the architecture and delegates
@@ -18,7 +18,7 @@ NixOS:      paths resolve via the nix store automatically.
 
 Architecture wiring order:
   1. LayerStack built with enabled layers (priority-sorted)
-  2. ContextLayer injected if ACTIVE_CONTEXT is set
+  2. ContextLayer injected if context system is enabled (priority=45)
   3. UserLayer injected last (priority=90)
   4. ConfigOrchestrator.build() → resolves layers, runs pipeline
   5. ConfigOrchestrator.apply() → writes to qutebrowser config API
@@ -30,6 +30,20 @@ Strict-mode notes (Pyright):
   - Event subscriber functions cast to concrete event type inside each body.
   - Lifecycle decorator return values assigned to _ to suppress
     reportUnusedFunction.
+
+v7 changes:
+  - HOST_POLICY_DEV is now actually passed to build_default_host_registry
+    (was silently ignored — bug fix; the flag existed but had no effect)
+  - build_default_host_registry called with include_dev=HOST_POLICY_DEV
+  - Summary banner shows host policy counts
+
+v6 changes (retained):
+  - USER_PROXY type corrected to Optional[str]
+  - Added USER_FONT_MONO / USER_FONT_SIZE_UI font override hints
+  - Added ACTIVE_CONTEXT "writing" to the documented valid values
+  - HOST_POLICY_DEV flag added
+  - HealthChecker.default() now runs 12 checks
+  - Summary banner improved: shows active context + profile
 """
 
 from __future__ import annotations
@@ -104,11 +118,10 @@ logger = logging.getLogger("qute.config")
 # ── Theme ─────────────────────────────────────────────────────────────────────
 # Built-in (5):
 #   catppuccin-mocha | catppuccin-latte | gruvbox-dark | tokyo-night | rose-pine
-# Extended (13+):
+# Extended (14+):
 #   nord | dracula | solarized-dark | solarized-light | one-dark
-#   everforest-dark | gruvbox-light | modus-vivendi
-#   catppuccin-macchiato | catppuccin-frappe | kanagawa | palenight
-#   glass  ← modern · minimal · premium; frosted-glass / Gaussian-blur aesthetic
+#   everforest-dark | kanagawa | palenight | catppuccin-frappe
+#   glass  ← modern · minimal · premium; frosted-glass / cold-blue aesthetic
 # Custom:    add to themes/extended.py, then use the name here
 THEME = "glass"
 
@@ -131,12 +144,18 @@ LEADER_KEY = ","
 
 # ── Active Context ────────────────────────────────────────────────────────────
 # Situational browser mode.  Injects context-specific search engines,
-# keybindings, and behavioral overrides.  None = auto-detect from
-# QUTE_CONTEXT environment variable, or default if not set.
+# keybindings, and behavioral overrides.
 #
-# Valid values: None | "default" | "work" | "research" | "media" | "dev"
+# Resolution order (highest wins):
+#   1. This variable (ACTIVE_CONTEXT)
+#   2. QUTE_CONTEXT environment variable
+#   3. ~/.config/qutebrowser/.context file (written by ,C* keybindings)
+#   4. "default" fallback
 #
-# Switch at runtime:  ,Cw (work)  ,Cr (research)  ,Cm (media)  ,Cd (dev)  ,C0 (reset)
+# Valid values: None | "default" | "work" | "research" | "media" | "dev" | "writing"
+#
+# Switch at runtime:  ,Cw (work)  ,Cr (research)  ,Cm (media)  ,Cd (dev)
+#                     ,Cwt (writing)  ,C0 (reset)  ,Ci (show current)
 ACTIVE_CONTEXT: Optional[str] = None
 
 # ── Layer enable / disable ────────────────────────────────────────────────────
@@ -157,6 +176,10 @@ LAYERS: dict[str, bool] = {
 HOST_POLICY_LOGIN:  bool = True   # Google, GitHub, GitLab login cookies
 HOST_POLICY_SOCIAL: bool = True   # Discord, Notion, Bilibili
 HOST_POLICY_MEDIA:  bool = True   # YouTube, Twitch (no-autoplay)
+HOST_POLICY_DEV:    bool = True   # localhost, 127.0.0.1, [::1], *.local (JS+cookies)
+                                  # NOTE (v7 fix): this flag is now actually used!
+                                  # Previously it was declared but never passed to
+                                  # build_default_host_registry — see wiring below.
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
@@ -195,14 +218,50 @@ USER_GITHUB: str = "redskaber"
 #   USER_SEARCH_ENGINES = {
 #       "jira": "https://jira.mycompany.com/issues/?jql=text+~+{}",
 #   }
-USER_SEARCH_ENGINES: dict[str, str] | None = None
+USER_SEARCH_ENGINES: dict[str, str] | None = {
+    "gpt":      "https://chatgpt.com/?{}",
+    "claude":   "https://claude.ai/new/?{}",
+    "deepseek": "https://chat.deepseek.com/?{}",
+    "bing":     "https://bing.com/?{}",
+}
 USER_SEARCH_ENGINES_MERGE: bool = True
+
+# ── Proxy ─────────────────────────────────────────────────────────────────────
+# content.proxy accepts a SINGLE string (not a list).
+#
+# Valid values:
+#   "system"                     → use the system proxy (default)
+#   "none"                       → direct connection, bypass system proxy
+#   "socks5://host:port"         → SOCKS5 proxy  (clash-verge / clash-meta)
+#   "socks://host:port"          → SOCKS5 (alias)
+#   "http://host:port"           → HTTP CONNECT proxy
+#
+# Clash-Verge / Clash-Meta mixed-port:
+#   SOCKS5 → socks5://127.0.0.1:7897   (preferred; tunnels all TCP+UDP)
+#   HTTP   → http://127.0.0.1:7897     (fallback for HTTP-only proxies)
+#
+# None = keep PrivacyLayer default ("system").
+#
+# Toggle keybinding: ,px (cycle modes), ,p0 (direct), ,ps (system)
+#
+USER_PROXY: Optional[str] = "socks5://127.0.0.1:7897"
+# USER_PROXY: Optional[str] = "http://127.0.0.1:7897"   # HTTP port (alt)
+# USER_PROXY: Optional[str] = "system"                   # use system proxy
+# USER_PROXY: Optional[str] = "none"                     # direct, no proxy
+# USER_PROXY: Optional[str] = None                       # keep PrivacyLayer default
 
 # ── Extra settings (escape hatch) ─────────────────────────────────────────────
 # Any qutebrowser setting not covered by the named layers.
+# NOTE: content.proxy must NOT be set here as a list — use USER_PROXY above.
 USER_EXTRA_SETTINGS: dict[str, Any] = {
-    # Example:
+    # Uncomment to override font (normally set by AppearanceLayer theme):
+    # "fonts.default_family": "JetBrainsMono Nerd Font",
+    # "fonts.default_size":   "10pt",
+    #
+    # Uncomment to move tabs to the left:
     # "tabs.position": "left",
+    #
+    # Uncomment to hide the status bar unless in a special mode:
     # "statusbar.show": "in-mode",
 }
 
@@ -222,6 +281,14 @@ USER_EXTRA_BINDINGS: list[tuple[str, str, str]] = [
 
     # ── Reader mode ───────────────────────────────────────────────────────
     (f"{L}R",   "spawn --userscript readability.py",                   "normal"),
+
+    # ── Proxy toggle (clash-verge ↔ direct) ──────────────────────────────
+    # ,px  → cycle: socks5 → http → system → none
+    (f"{L}px",  "config-cycle content.proxy socks5://127.0.0.1:7897 http://127.0.0.1:7897 system none", "normal"),
+    # ,p0  → direct connection (no proxy)
+    (f"{L}p0",  "set content.proxy none",                              "normal"),
+    # ,ps  → use system proxy settings
+    (f"{L}ps",  "set content.proxy system",                            "normal"),
 
     # ── Clipboard URL ─────────────────────────────────────────────────────
     ("gx",      "open -t -- {clipboard}",                              "normal"),
@@ -264,12 +331,16 @@ def _build_orchestrator() -> ConfigOrchestrator:
     fsm       = ConfigStateMachine()
 
     # ── Host Policy Registry ──────────────────────────────────────────
-    host_registry: Optional[HostPolicyRegistry] = None
+    # v7 fix: HOST_POLICY_DEV is now passed as include_dev= to the factory.
+    # Previously the flag was declared in config.py but silently ignored
+    # because _build_host_registry was called without it.
+    host_registry: Optional[HostPolicyRegistry] = None  # type: ignore[name-defined]
     if _HOST_REGISTRY_AVAILABLE:
-        host_registry = _build_host_registry(
+        host_registry = _build_host_registry(  # type: ignore[possibly-undefined]
             include_login  = HOST_POLICY_LOGIN,
             include_social = HOST_POLICY_SOCIAL,
             include_media  = HOST_POLICY_MEDIA,
+            include_dev    = HOST_POLICY_DEV,   # ← v7 fix: was missing
         )
 
     # ── Layer Stack ───────────────────────────────────────────────────
@@ -288,8 +359,6 @@ def _build_orchestrator() -> ConfigOrchestrator:
         stack.register(BehaviorLayer(leader=LEADER_KEY))
 
     if LAYERS.get("context") and _CONTEXT_LAYER_AVAILABLE:
-        # Resolve base engines from what's been registered so far
-        # (ContextLayer merges its engine delta on top at priority=45)
         stack.register(ContextLayer(
             context = ACTIVE_CONTEXT,
             leader  = LEADER_KEY,
@@ -304,6 +373,7 @@ def _build_orchestrator() -> ConfigOrchestrator:
             editor                = USER_EDITOR,
             start_pages           = USER_START_PAGES,
             zoom                  = USER_ZOOM,
+            proxy                 = USER_PROXY,
             search_engines        = USER_SEARCH_ENGINES,
             search_engines_merge  = USER_SEARCH_ENGINES_MERGE,
             spellcheck_langs      = USER_SPELLCHECK,
@@ -316,7 +386,7 @@ def _build_orchestrator() -> ConfigOrchestrator:
     # ── Lifecycle hooks ───────────────────────────────────────────────
     @lifecycle.decorator(LifecycleHook.POST_APPLY, priority=100)
     def _log_apply_done() -> None:
-        logger.info("✓ qutebrowser config applied successfully")
+        logger.info("✓ qutebrowser config applied successfully (v7)")
 
     @lifecycle.decorator(LifecycleHook.ON_ERROR, priority=10)
     def _log_error() -> None:

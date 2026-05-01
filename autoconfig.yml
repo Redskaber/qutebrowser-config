@@ -6,13 +6,5 @@
 
 config_version: 2
 settings:
-  editor.command:
-    global:
-      - alacritty
-      - -e
-      - nvim
-      - "{}"
-      - kitty
-      - -e
-      - nvim
-      - "{}"
+  content.cookies.accept:
+    global: no-3rdparty
