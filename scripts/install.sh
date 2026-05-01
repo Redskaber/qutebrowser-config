@@ -11,10 +11,18 @@
 #   --backup    Backup existing config before deploying
 #   --link      Use symlinks instead of copies (for live development)
 #
-# NixOS note:
-#   If you manage qutebrowser via home-manager, set:
-#     programs.qutebrowser.configPyContent = builtins.readFile ./config.py;
-#   and point extraConfigPy at this directory instead.
+# Directory layout deployed:
+#   config.py          ← qutebrowser entry point
+#   orchestrator.py    ← wiring / composition root
+#   core/              ← FSM, pipeline, lifecycle, protocol, strategy, incremental
+#   layers/            ← base, privacy, appearance, behavior, performance, user
+#   strategies/        ← merge, profile, search, download strategies
+#   policies/          ← content, network, security, host policies
+#   themes/            ← extended color schemes (nord, dracula, solarized-*, …)
+#   keybindings/       ← catalog, conflict detection
+#   docs/              ← ARCHITECTURE.md, EXTENDING.md, KEYBINDINGS.md
+#   scripts/           ← userscripts (deployed to userscripts/ dir)
+#   tests/             ← test suite (not deployed to qutebrowser dir)
 
 set -euo pipefail
 
@@ -27,7 +35,6 @@ DRY_RUN=false
 BACKUP=false
 USE_LINKS=false
 
-# ── Parse arguments ──────────────────────────────────────────────────────────
 for arg in "$@"; do
   case $arg in
   --dry-run) DRY_RUN=true ;;
@@ -44,7 +51,6 @@ for arg in "$@"; do
   esac
 done
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
 log() { echo "  $*"; }
 info() { echo "→ $*"; }
 dry() { $DRY_RUN && echo "  [dry] $*" && return 0 || return 1; }
@@ -77,27 +83,30 @@ fi
 
 # ── Create directories ───────────────────────────────────────────────────────
 info "Creating config directories"
-dry "mkdir -p $QUTE_CONFIG_DIR" || mkdir -p "$QUTE_CONFIG_DIR"
-dry "mkdir -p $QUTE_SCRIPTS_DIR" || mkdir -p "$QUTE_SCRIPTS_DIR"
+for d in "$QUTE_CONFIG_DIR" "$QUTE_SCRIPTS_DIR"; do
+  dry "mkdir -p $d" || mkdir -p "$d"
+done
 
-# ── Deploy core modules ───────────────────────────────────────────────────────
-info "Deploying architecture modules"
-for dir in core layers; do
+# ── Deploy package directories ────────────────────────────────────────────────
+info "Deploying package directories"
+for dir in core layers strategies policies themes keybindings docs; do
   src="$PROJECT_ROOT/$dir"
   dst="$QUTE_CONFIG_DIR/$dir"
+  [ -d "$src" ] || {
+    log "skip (not found): $dir"
+    continue
+  }
   if [ -d "$dst" ] && ! $USE_LINKS; then
     dry "rm -rf $dst" || rm -rf "$dst"
   fi
   do_install "$src" "$dst"
 done
 
-# ── Deploy orchestrator ───────────────────────────────────────────────────────
-info "Deploying orchestrator"
-do_install "$PROJECT_ROOT/orchestrator.py" "$QUTE_CONFIG_DIR/orchestrator.py"
-
-# ── Deploy config.py ─────────────────────────────────────────────────────────
-info "Deploying config.py"
-do_install "$PROJECT_ROOT/config.py" "$QUTE_CONFIG_DIR/config.py"
+# ── Deploy root Python files ─────────────────────────────────────────────────
+info "Deploying root modules"
+for f in config.py orchestrator.py; do
+  do_install "$PROJECT_ROOT/$f" "$QUTE_CONFIG_DIR/$f"
+done
 
 # ── Deploy userscripts ────────────────────────────────────────────────────────
 info "Deploying userscripts"
@@ -114,24 +123,33 @@ for f in \
   "$QUTE_CONFIG_DIR/config.py" \
   "$QUTE_CONFIG_DIR/orchestrator.py" \
   "$QUTE_CONFIG_DIR/core/"*.py \
-  "$QUTE_CONFIG_DIR/layers/"*.py; do
+  "$QUTE_CONFIG_DIR/layers/"*.py \
+  "$QUTE_CONFIG_DIR/strategies/"*.py \
+  "$QUTE_CONFIG_DIR/policies/"*.py \
+  "$QUTE_CONFIG_DIR/themes/"*.py \
+  "$QUTE_CONFIG_DIR/keybindings/"*.py; do
   [ -f "$f" ] || continue
   if dry "python3 -m py_compile $f"; then continue; fi
-  python3 -m py_compile "$f" && log "ok: $f" || log "SYNTAX ERROR: $f"
+  python3 -m py_compile "$f" && log "ok: $(basename $f)" || log "SYNTAX ERROR: $f"
 done
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-$DRY_RUN && echo "  [DRY RUN] No files were changed" || echo "  ✓ Config deployed to $QUTE_CONFIG_DIR"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+$DRY_RUN && echo "  [DRY RUN] No files were changed" ||
+  echo "  ✓ Config deployed to $QUTE_CONFIG_DIR"
 echo ""
-echo "  Structure:"
-echo "    config.py           ← entry point (only this runs)"
+echo "  Layout:"
+echo "    config.py           ← entry point (ONLY file qutebrowser loads)"
 echo "    orchestrator.py     ← wires all modules"
-echo "    core/               ← pipeline, state, protocol, layer"
-echo "    layers/             ← base, privacy, appearance, behavior"
-echo "    userscripts/        ← readability.py, password.py"
+echo "    core/               ← FSM, pipeline, lifecycle, protocol, strategy"
+echo "    layers/             ← base, privacy, appearance, behavior, performance, user"
+echo "    strategies/         ← merge, profile, search, download"
+echo "    policies/           ← content, network, security, host"
+echo "    themes/             ← extended color schemes"
+echo "    keybindings/        ← catalog + conflict detection"
+echo "    docs/               ← ARCHITECTURE.md, EXTENDING.md, KEYBINDINGS.md"
+echo "    userscripts/        ← open_with.py, search_sel.py, readability.py, …"
 echo ""
-echo "  To reload in qutebrowser: :config-source"
-echo "  Keybinding: ,r"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  To reload in qutebrowser: :config-source  or  ${LEADER_KEY:-,}r"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

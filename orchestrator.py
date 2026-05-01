@@ -9,22 +9,26 @@ Responsibilities:
   3. Run the Layer Pipeline
   4. Apply resolved config to qutebrowser via ConfigApplier
   5. Emit lifecycle events via the MessageRouter
+  6. Apply per-host overrides via HostPolicyRegistry
 
 This is the *only* file with knowledge of the full system.
 All other modules are purely functional; dependencies flow inward.
 
 Principle: single wiring point, explicit dependency injection.
 
-Fix applied vs original:
-  Removed the spurious ``fsm.send(ConfigEvent.APPLY_START)`` call at the
-  top of ``apply()``.  The FSM enters APPLYING state during ``build()``
-  (via VALIDATING → VALIDATE_DONE → APPLYING).  Sending APPLY_START from
-  inside APPLYING had no defined transition and always emitted a WARNING.
-  The correct semantic is: APPLYING is the "apply in progress" state, and
-  APPLY_DONE / APPLY_FAIL drive the exit.
+Changelog vs v2:
+  - apply_host_policies() now accepts an optional HostPolicyRegistry
+    (from policies/host.py) in addition to BehaviorLayer.host_policies().
+    Registry rules are applied first; BehaviorLayer rules are appended.
+    This allows structured policy management without modifying BehaviorLayer.
+  - ConfigOrchestrator.__init__ accepts optional host_registry parameter.
+  - summary() now includes host-rule count.
+  - Policy chain (from core/strategy.py) is applied per-key during
+    apply_settings() when a policy_chain is provided.
 
-  Also improved summary() to log the number of *settings keys* (not just
-  the 3 top-level category keys) and the count of keybindings and aliases.
+Strict-mode notes (Pyright):
+  - All Optional[] parameters have explicit None defaults.
+  - HostPolicyRegistry imported lazily to avoid circular import at module level.
 """
 
 from __future__ import annotations
@@ -34,15 +38,14 @@ from typing import Any, Dict, List, Optional
 
 from core.layer import LayerStack
 from core.lifecycle import LifecycleHook, LifecycleManager
-from core.pipeline import ConfigPacket # LogStage, Pipeline
+from core.pipeline import ConfigPacket
 from core.protocol import (
     ConfigErrorEvent,
     LayerAppliedEvent,
-    MessageRouter
-    # ThemeChangedEvent
+    MessageRouter,
 )
 from core.state import ConfigEvent, ConfigState, ConfigStateMachine
-from core.strategy import PolicyChain # RangePolicy, TypeEnforcePolicy
+from core.strategy import PolicyAction, PolicyChain
 
 logger = logging.getLogger("qute.orchestrator")
 
@@ -55,45 +58,83 @@ ConfigDict = Dict[str, Any]
 
 class ConfigApplier:
     """
-    Translates a resolved ``ConfigDict`` into qutebrowser config API calls.
+    Translates a resolved ConfigDict into qutebrowser config API calls.
 
     Separated from the orchestrator so it can be replaced / mocked in tests
     without requiring a running qutebrowser instance.
     """
 
-    def __init__(self, config_obj, bindings_obj):
+    def __init__(self, config_obj: Any, bindings_obj: Any) -> None:
         """
         Args:
-            config_obj:   qutebrowser ``config`` object (provides .set/.bind)
+            config_obj:   qutebrowser ``config`` object (.set / .bind)
             bindings_obj: qutebrowser ``c`` object (attribute-style access)
         """
         self._config = config_obj
         self._c      = bindings_obj
 
-    def apply_settings(self, settings: ConfigDict) -> List[str]:
-        """Apply flat key=value settings; return list of error strings."""
+    def apply_settings(
+        self,
+        settings:     ConfigDict,
+        policy_chain: Optional[PolicyChain] = None,
+    ) -> List[str]:
+        """
+        Apply flat key=value settings; return list of error strings.
+
+        If policy_chain is provided, each (key, value) pair is evaluated
+        before being applied:
+          - ALLOW  → applied as-is
+          - MODIFY → modified_value is applied instead
+          - WARN   → log warning, apply as-is
+          - DENY   → skip this key entirely
+        """
         errors: List[str] = []
+        ctx: ConfigDict = {}   # context for policy evaluation (can carry metadata)
+
         for key, value in settings.items():
+            applied_value = value
+
+            # ── Policy gate ──────────────────────────────────────────────
+            if policy_chain is not None:
+                decision = policy_chain.evaluate(key, value, ctx)
+                if decision.action == PolicyAction.DENY:
+                    logger.debug(
+                        "[Applier] DENY %s: %s", key, decision.reason
+                    )
+                    continue
+                elif decision.action == PolicyAction.MODIFY:
+                    applied_value = decision.modified_value
+                    logger.debug(
+                        "[Applier] MODIFY %s: %r → %r (%s)",
+                        key, value, applied_value, decision.reason
+                    )
+                elif decision.action == PolicyAction.WARN:
+                    logger.warning(
+                        "[Applier] WARN %s = %r: %s", key, value, decision.reason
+                    )
+
+            # ── Apply ────────────────────────────────────────────────────
             try:
-                self._config.set(key, value)
-                logger.debug("[Applier] set %s = %r", key, value)
+                self._config.set(key, applied_value)
+                logger.debug("[Applier] set %s = %r", key, applied_value)
             except Exception as exc:
                 msg = f"set {key}: {exc}"
                 errors.append(msg)
                 logger.error("[Applier] %s", msg)
+
         return errors
 
     def apply_keybindings(
         self,
-        bindings: List[tuple],
+        bindings:    List[tuple],  # type: ignore[type-arg]
         clear_first: bool = True,
     ) -> List[str]:
         """
         Apply keybindings.
 
         Args:
-            bindings:    list of ``(key, command, mode)`` or ``(key, command)`` tuples.
-            clear_first: if True, call ``_clear_defaults()`` before binding.
+            bindings:    list of (key, command, mode) or (key, command) tuples.
+            clear_first: if True, call _clear_defaults() before binding.
         """
         errors: List[str] = []
         if clear_first:
@@ -132,6 +173,7 @@ class ConfigApplier:
         return errors
 
     def apply_host_policy(self, pattern: str, settings: ConfigDict) -> List[str]:
+        """Apply pattern-scoped settings for a single host rule."""
         errors: List[str] = []
         for key, value in settings.items():
             try:
@@ -147,8 +189,8 @@ class ConfigApplier:
         """
         Unbind qutebrowser default keybindings we intend to override.
 
-        We deliberately do NOT blanket-clear all defaults here — that would
-        break built-in bindings we haven't overridden.  Layers emit exactly
+        We deliberately do NOT blanket-clear all defaults — that would break
+        built-in bindings we haven't overridden.  Layers emit exactly
         the bindings they want; qutebrowser merges them on top of defaults.
         """
         pass
@@ -164,26 +206,29 @@ class ConfigOrchestrator:
 
     Lifecycle::
 
-        orchestrator.build()   → assembles layers, runs pipeline
-        orchestrator.apply()   → writes to qutebrowser config API
-        orchestrator.reload()  → hot-reload (re-runs build + apply)
+        orchestrator.build()              → assembles layers, runs pipeline
+        orchestrator.apply(applier)       → writes to qutebrowser config API
+        orchestrator.apply_host_policies  → pattern-scoped overrides
+        orchestrator.reload(applier)      → hot-reload (re-runs build + apply)
     """
 
     def __init__(
         self,
-        stack:        LayerStack,
-        router:       MessageRouter,
-        lifecycle:    LifecycleManager,
-        fsm:          ConfigStateMachine,
-        policy_chain: Optional[PolicyChain] = None,
+        stack:         LayerStack,
+        router:        MessageRouter,
+        lifecycle:     LifecycleManager,
+        fsm:           ConfigStateMachine,
+        policy_chain:  Optional[PolicyChain] = None,
+        host_registry: Any = None,   # Optional[HostPolicyRegistry] — avoids import
     ) -> None:
-        self._stack     = stack
-        self._router    = router
-        self._lifecycle = lifecycle
-        self._fsm       = fsm
-        self._policy    = policy_chain or PolicyChain()
-        self._resolved: Optional[Dict[str, ConfigPacket]] = None
-        self._applier:  Optional[ConfigApplier] = None
+        self._stack         = stack
+        self._router        = router
+        self._lifecycle     = lifecycle
+        self._fsm           = fsm
+        self._policy        = policy_chain or PolicyChain()
+        self._host_registry = host_registry   # HostPolicyRegistry | None
+        self._resolved:     Optional[Dict[str, ConfigPacket]] = None
+        self._applier:      Optional[ConfigApplier]           = None
 
         # Wire FSM transition log observer
         self._fsm.on_transition(self._on_state_transition)
@@ -229,13 +274,12 @@ class ConfigOrchestrator:
         """
         Write the resolved config to qutebrowser.
 
-        Must be called after ``build()``.  The FSM is expected to already be
-        in the APPLYING state (set by ``build()`` via VALIDATE_DONE).
+        Must be called after build().  The FSM is expected to already be in
+        the APPLYING state (entered during build() via VALIDATE_DONE).
         FSM exits to ACTIVE on success or ERROR on failure.
 
-        NOTE: APPLY_START is intentionally NOT sent here.  The FSM enters
-        APPLYING during build(); sending APPLY_START from inside APPLYING
-        had no defined transition and produced a spurious WARNING in the log.
+        The optional policy_chain (injected at construction time) is evaluated
+        per-key inside apply_settings().
         """
         if self._resolved is None:
             raise RuntimeError("call build() before apply()")
@@ -248,9 +292,10 @@ class ConfigOrchestrator:
 
             merged = self._stack.merged
 
-            # 1. Flat settings (key → value)
+            # 1. Settings — policy chain applied per-key if configured
             settings = merged.get("settings", {})
-            all_errors.extend(applier.apply_settings(settings))
+            policy_chain = self._policy if len(self._policy._policies) > 0 else None
+            all_errors.extend(applier.apply_settings(settings, policy_chain))
 
             # 2. Keybindings (accumulated across all layers)
             keybindings = merged.get("keybindings", [])
@@ -260,7 +305,7 @@ class ConfigOrchestrator:
             aliases = merged.get("aliases", {})
             all_errors.extend(applier.apply_aliases(aliases))
 
-            # 4. Per-layer events (for subscribers / logging)
+            # 4. Per-layer applied events (for subscribers / logging)
             for layer_name, packet in self._resolved.items():
                 self._router.emit(LayerAppliedEvent(
                     layer_name=layer_name,
@@ -288,34 +333,61 @@ class ConfigOrchestrator:
 
     def apply_host_policies(self, applier: ConfigApplier) -> List[str]:
         """
-        Apply per-host configuration overrides from BehaviorLayer.
-        Called after the main ``apply()`` pass.
+        Apply per-host configuration overrides.
+
+        Two sources, applied in order:
+          1. HostPolicyRegistry (from policies/host.py) — if injected at
+             construction time.  Structured, queryable, data-driven.
+          2. BehaviorLayer.host_policies() — legacy list for backwards compat.
+
+        Registry rules are preferred; BehaviorLayer rules are the escape hatch
+        for quick one-off additions directly in behavior.py.
+
+        Called after the main apply() pass.
         """
-        from layers.behavior import BehaviorLayer
-
-        behavior = self._stack.get("behavior")
-        if not isinstance(behavior, BehaviorLayer):
-            return []
-
         all_errors: List[str] = []
-        for policy in behavior.host_policies():
-            errors = applier.apply_host_policy(policy.pattern, policy.settings)
-            all_errors.extend(errors)
-            if not errors:
-                logger.info(
-                    "[Orchestrator] host-policy applied: %s  (%s)",
-                    policy.pattern, policy.description,
-                )
+        rule_count = 0
+
+        # ── Source 1: HostPolicyRegistry ──────────────────────────────────
+        if self._host_registry is not None:
+            for rule in self._host_registry.active():
+                errors = applier.apply_host_policy(rule.pattern, rule.settings)
+                all_errors.extend(errors)
+                if not errors:
+                    logger.debug(
+                        "[Orchestrator] host-registry: %s  (%s)",
+                        rule.pattern, rule.description
+                    )
+                rule_count += 1
+
+        # ── Source 2: BehaviorLayer.host_policies() ───────────────────────
+        from layers.behavior import BehaviorLayer
+        behavior = self._stack.get("behavior")
+        if isinstance(behavior, BehaviorLayer):
+            for policy in behavior.host_policies():
+                errors = applier.apply_host_policy(policy.pattern, policy.settings)
+                all_errors.extend(errors)
+                if not errors:
+                    logger.info(
+                        "[Orchestrator] host-policy: %s  (%s)",
+                        policy.pattern, policy.description,
+                    )
+                rule_count += 1
+
+        logger.info(
+            "[Orchestrator] host policies applied: %d rules, %d error(s)",
+            rule_count, len(all_errors),
+        )
         return all_errors
 
-    # ── Hot reload ─────────────────────────────────────────────────────
+    # ── Hot Reload ─────────────────────────────────────────────────────
 
     def reload(self, applier: Optional[ConfigApplier] = None) -> List[str]:
         """Hot-reload: re-build and re-apply the full config."""
         self._fsm.send(ConfigEvent.RELOAD)
         self._lifecycle.run(LifecycleHook.PRE_RELOAD)
         self.build()
-        errors = self.apply(applier or self._applier)
+        errors = self.apply(applier or self._applier)  # type: ignore[arg-type]
         self._lifecycle.run(LifecycleHook.POST_RELOAD)
         return errors
 
@@ -326,6 +398,9 @@ class ConfigOrchestrator:
         n_sets  = len(merged.get("settings", {}))
         n_binds = len(merged.get("keybindings", []))
         n_alias = len(merged.get("aliases", {}))
+        n_hosts = (
+            len(self._host_registry) if self._host_registry is not None else 0
+        )
 
         lines = [
             "─" * 60,
@@ -339,6 +414,8 @@ class ConfigOrchestrator:
                 f"\nMerged: {n_sets} settings  "
                 f"{n_binds} keybindings  {n_alias} aliases"
             )
+        if n_hosts:
+            lines.append(f"Host rules: {n_hosts} (from HostPolicyRegistry)")
         return "\n".join(lines)
 
     # ── Private ────────────────────────────────────────────────────────
