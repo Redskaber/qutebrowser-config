@@ -117,6 +117,51 @@ EXTENDED_THEMES: Dict[str, ColorScheme] = {
         font_mono="JetBrainsMono Nerd Font", font_sans="Noto Sans",
         font_size_ui="10pt", font_size_web="16px",
     ),
+
+    "catppuccin-macchiato": ColorScheme(
+        bg="#24273a", bg_alt="#1e2030", bg_surface="#363a4f",
+        fg="#cad3f5", fg_dim="#6e738d", fg_strong="#ffffff",
+        accent="#8aadf4", accent2="#c6a0f6",
+        success="#a6da95", warning="#eed49f", error="#ed8796", info="#91d7e3",
+        hint_bg="#24273a", hint_fg="#ed8796", hint_border="#8aadf4",
+        select_bg="#363a4f", select_fg="#cad3f5",
+        font_mono="JetBrainsMono Nerd Font", font_sans="Noto Sans",
+        font_size_ui="10pt", font_size_web="16px",
+    ),
+
+    "catppuccin-frappe": ColorScheme(
+        bg="#303446", bg_alt="#292c3c", bg_surface="#414559",
+        fg="#c6d0f5", fg_dim="#626880", fg_strong="#ffffff",
+        accent="#8caaee", accent2="#ca9ee6",
+        success="#a6d189", warning="#e5c890", error="#e78284", info="#85c1dc",
+        hint_bg="#303446", hint_fg="#e78284", hint_border="#8caaee",
+        select_bg="#414559", select_fg="#c6d0f5",
+        font_mono="JetBrainsMono Nerd Font", font_sans="Noto Sans",
+        font_size_ui="10pt", font_size_web="16px",
+    ),
+
+    "kanagawa": ColorScheme(
+        # Kanagawa — inspired by the Great Wave painting
+        bg="#1f1f28", bg_alt="#16161d", bg_surface="#2a2a37",
+        fg="#dcd7ba", fg_dim="#727169", fg_strong="#e6c384",
+        accent="#7e9cd8", accent2="#957fb8",
+        success="#98bb6c", warning="#dca561", error="#c34043", info="#7fb4ca",
+        hint_bg="#1f1f28", hint_fg="#c34043", hint_border="#7e9cd8",
+        select_bg="#2d4f67", select_fg="#dcd7ba",
+        font_mono="JetBrainsMono Nerd Font", font_sans="Noto Sans",
+        font_size_ui="10pt", font_size_web="16px",
+    ),
+
+    "palenight": ColorScheme(
+        bg="#292d3e", bg_alt="#1b1e2b", bg_surface="#34384e",
+        fg="#a6accd", fg_dim="#676e95", fg_strong="#ffffff",
+        accent="#82aaff", accent2="#c792ea",
+        success="#c3e88d", warning="#ffcb6b", error="#f07178", info="#89ddff",
+        hint_bg="#292d3e", hint_fg="#f07178", hint_border="#82aaff",
+        select_bg="#34384e", select_fg="#a6accd",
+        font_mono="JetBrainsMono Nerd Font", font_sans="Noto Sans",
+        font_size_ui="10pt", font_size_web="16px",
+    ),
 }
 
 

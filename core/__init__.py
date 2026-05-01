@@ -32,56 +32,66 @@ from core.pipeline import (
     PipeStage,
     TransformStage,
     ValidateStage,
+    ConditionalStage,
 )
 from core.protocol import (
     CommandBus,
-    ConfigErrorEvent,
     EventBus,
-    LayerAppliedEvent,
     MessageRouter,
     QueryBus,
-    SetOptionCommand,
+    Event,
+    Command,
+    Query,
+    LayerAppliedEvent,
+    ConfigErrorEvent,
     ThemeChangedEvent,
 )
 from core.state import (
     ConfigEvent,
     ConfigState,
     ConfigStateMachine,
-    StateContext,
 )
 from core.strategy import (
-    AllowlistPolicy,
     Policy,
     PolicyAction,
     PolicyChain,
     PolicyDecision,
-    RangePolicy,
-    ReadOnlyPolicy,
     Strategy,
     StrategyRegistry,
+    ReadOnlyPolicy,
     TypeEnforcePolicy,
+    RangePolicy,
+    AllowlistPolicy,
+)
+from core.health import (
+    HealthCheck,
+    HealthChecker,
+    HealthIssue,
+    HealthReport,
+    Severity,
 )
 
 __all__ = [
     # incremental
-    "ChangeKind", "ConfigChange", "ConfigDiffer", "ConfigSnapshot",
-    "IncrementalApplier", "SnapshotStore",
+    "ChangeKind", "ConfigChange", "ConfigDiffer",
+    "ConfigSnapshot", "IncrementalApplier", "SnapshotStore",
     # layer
     "BaseConfigLayer", "LayerProtocol", "LayerStack",
     # lifecycle
     "LifecycleHook", "LifecycleManager",
     # pipeline
-    "ConfigPacket", "LogStage", "MergeStage", "Pipeline", "PipeStage",
-    "TransformStage", "ValidateStage",
+    "ConfigPacket", "LogStage", "MergeStage", "Pipeline",
+    "PipeStage", "TransformStage", "ValidateStage", "ConditionalStage",
     # protocol
-    "CommandBus", "ConfigErrorEvent", "EventBus", "LayerAppliedEvent",
-    "MessageRouter", "QueryBus", "SetOptionCommand", "ThemeChangedEvent",
+    "CommandBus", "EventBus", "MessageRouter", "QueryBus",
+    "Event", "Command", "Query",
+    "LayerAppliedEvent", "ConfigErrorEvent", "ThemeChangedEvent",
     # state
-    "ConfigEvent", "ConfigState", "ConfigStateMachine", "StateContext",
+    "ConfigEvent", "ConfigState", "ConfigStateMachine",
     # strategy
-    "AllowlistPolicy", "Policy", "PolicyAction", "PolicyChain",
-    "PolicyDecision", "RangePolicy", "ReadOnlyPolicy", "Strategy",
-    "StrategyRegistry", "TypeEnforcePolicy",
+    "Policy", "PolicyAction", "PolicyChain", "PolicyDecision",
+    "Strategy", "StrategyRegistry",
+    "ReadOnlyPolicy", "TypeEnforcePolicy", "RangePolicy", "AllowlistPolicy",
+    # health
+    "HealthCheck", "HealthChecker", "HealthIssue", "HealthReport", "Severity",
 ]
-
-

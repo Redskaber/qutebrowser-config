@@ -84,9 +84,6 @@ class BehaviorLayer(BaseConfigLayer):
             # ── New tab ───────────────────────────────────────
             "url.default_page": "about:blank",
 
-            # ── External programs ─────────────────────────────
-            "downloads.open_dispatcher": None,
-
             # ── Caret mode ────────────────────────────────────
             "input.insert_mode.auto_enter": True,
             "input.insert_mode.auto_leave": True,
@@ -211,6 +208,24 @@ class BehaviorLayer(BaseConfigLayer):
             ("<ctrl-n>", "completion-item-focus next",         "command"),
             ("<ctrl-j>", "completion-item-focus next",         "command"),
             ("<ctrl-k>", "completion-item-focus prev",         "command"),
+
+            # ────────────────────────────────────────────────────
+            # Prompt mode
+            # ────────────────────────────────────────────────────
+            ("<ctrl-p>", "prompt-item-focus prev",             "prompt"),
+            ("<ctrl-n>", "prompt-item-focus next",             "prompt"),
+            ("<Escape>", "mode-leave",                         "prompt"),
+
+            # ────────────────────────────────────────────────────
+            # Hint mode extras
+            # ────────────────────────────────────────────────────
+            ("<Escape>", "mode-leave",                         "hint"),
+
+            # ────────────────────────────────────────────────────
+            # Window management
+            # ────────────────────────────────────────────────────
+            (f"{L}n",    "open -w",                            "normal"),
+            (f"{L}N",    "open -p -w",                        "normal"),
         ]
 
     def host_policies(self) -> List[HostPolicy]:

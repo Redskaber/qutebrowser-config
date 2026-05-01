@@ -46,6 +46,7 @@ from core.protocol import (
 )
 from core.state import ConfigEvent, ConfigState, ConfigStateMachine
 from core.strategy import PolicyAction, PolicyChain
+from core.health import HealthChecker
 
 logger = logging.getLogger("qute.orchestrator")
 
@@ -311,6 +312,16 @@ class ConfigOrchestrator:
                     layer_name=layer_name,
                     key_count=len(packet.data.get("settings", packet.data)),
                 ))
+
+            # 5. Health checks — validate resolved settings for common issues
+            checker = HealthChecker.default()
+            health_report = checker.check(settings)
+            if not health_report.ok:
+                logger.warning(
+                    "[Orchestrator] health check: %s", health_report.summary()
+                )
+            else:
+                logger.debug("[Orchestrator] health check: all checks passed")
 
             self._lifecycle.run(LifecycleHook.POST_APPLY)
 

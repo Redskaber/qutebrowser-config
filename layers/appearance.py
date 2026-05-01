@@ -283,8 +283,10 @@ class AppearanceLayer(BaseConfigLayer):
         }
 
     def _font_settings(self, c: ColorScheme) -> ConfigDict:
-        mono = f"10pt '{c.font_mono}'"
-        sans = f"10pt '{c.font_sans}'"
+        # Use ColorScheme.font_size_ui for UI fonts (was hard-coded to "10pt")
+        size = c.font_size_ui  # e.g. "10pt", "11pt"
+        mono = f"{size} '{c.font_mono}'"
+        sans = f"{size} '{c.font_sans}'"
         return {
             "fonts.completion.entry":       mono,
             "fonts.completion.category":    f"bold {mono}",

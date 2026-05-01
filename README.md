@@ -2,57 +2,24 @@
 
 > A principled, layered qutebrowser configuration — built like software, not a script.
 
-**131 tests · 6 layers · 7 core modules · 4 strategy modules · 4 policy modules · 8 extended themes · NixOS-ready**
-
----
-
-## Table of Contents
-
-1. [Quick Start](#quick-start)
-2. [Architecture Overview](#architecture-overview)
-3. [Design Principles](#design-principles)
-4. [Module Reference](#module-reference)
-5. [Configuration Guide](#configuration-guide)
-6. [Keybindings Reference](#keybindings-reference)
-7. [Themes](#themes)
-8. [Privacy Profiles](#privacy-profiles)
-9. [Userscripts](#userscripts)
-10. [Extending the Architecture](#extending-the-architecture)
-11. [Testing](#testing)
-12. [Troubleshooting](#troubleshooting)
-13. [Changelog](#changelog)
+**153 tests · 6 layers · 8 core modules · 4 strategy modules · 4 policy modules · 17 themes · NixOS-ready**
 
 ---
 
 ## Quick Start
 
-### Standard (any Linux)
-
 ```bash
 git clone <repo> ~/.config/qutebrowser
 cd ~/.config/qutebrowser
 ./scripts/install.sh --backup
+# Reload: :config-source  or  ,r
 ```
 
-For live development (changes take effect on `:config-source`):
+For live development:
 
 ```bash
 ./scripts/install.sh --link
 ```
-
-### NixOS / home-manager
-
-```nix
-imports = [ /path/to/qutebrowser-config/nix/qutebrowser.nix ];
-```
-
-### Reload in qutebrowser
-
-```
-:config-source
-```
-
-or press `,r` (default leader key binding).
 
 ---
 
@@ -62,96 +29,39 @@ or press `,r` (default leader key binding).
 config.py  ← qutebrowser loads ONLY this file
     │
     └── ConfigOrchestrator          (composition root)
-          │
-          ├── LayerStack ─────────────────── priority-ordered merge pipeline
+          ├── LayerStack             priority-ordered merge pipeline
           │     ├── BaseLayer        [p=10]  foundational defaults
           │     ├── PrivacyLayer     [p=20]  security & tracking protection
           │     ├── AppearanceLayer  [p=30]  theme, fonts, colors
           │     ├── BehaviorLayer    [p=40]  UX, keybindings, per-host rules
           │     ├── PerformanceLayer [p=50]  cache & rendering tuning
           │     └── UserLayer        [p=90]  personal overrides (highest)
-          │
-          ├── ConfigStateMachine ─────────── lifecycle state tracking
-          │     IDLE → LOADING → VALIDATING → APPLYING → ACTIVE
-          │              ↘              ↘           ↘
-          │             ERROR          ERROR       ERROR
-          │               └──── RELOADING ─────────┘
-          │
-          ├── MessageRouter ──────────────── inter-module communication
-          │     ├── EventBus   (pub/sub, zero coupling)
-          │     ├── CommandBus (CQRS commands, exactly-one handler)
-          │     └── QueryBus   (CQRS queries, exactly-one handler)
-          │
-          ├── LifecycleManager ───────────── ordered hook execution
-          │     PRE_INIT → POST_INIT → PRE_APPLY → POST_APPLY
-          │     PRE_RELOAD → POST_RELOAD → ON_ERROR → ON_TEARDOWN
-          │
-          ├── HostPolicyRegistry ─────────── structured per-host rules
-          │     categories: dev | login | social | media | general
-          │
-          └── IncrementalApplier ─────────── delta-only hot reload
-                SnapshotStore → ConfigDiffer → apply changed keys only
-```
-
-### Data Flow
-
-```
-qutebrowser loads config.py
-        │
-        ▼
-_build_orchestrator()
-  ├── HostPolicyRegistry   ← structured per-host rules (policies/host.py)
-  ├── MessageRouter / LifecycleManager / ConfigStateMachine
-  └── LayerStack           ← layers registered by priority
-        │
-        ▼
-orchestrator.build()
-  ├── FSM: IDLE → LOADING
-  ├── lifecycle: PRE_INIT hooks
-  ├── LayerStack.resolve():
-  │     for each layer (priority order):
-  │       raw   = layer.build()            ← pure: {settings, keybindings, aliases}
-  │       errs  = layer.validate(raw)      ← pure: [] or ["error"]
-  │       pkt   = ConfigPacket(raw, errs)
-  │       pkt   = layer.pipeline().run(pkt)   ← optional per-layer transform
-  │       merged = deep_merge(merged, pkt.data)
-  ├── FSM: LOADING → VALIDATING → APPLYING
-  └── lifecycle: POST_INIT hooks
-        │
-        ▼
-orchestrator.apply(ConfigApplier)
-  ├── lifecycle: PRE_APPLY
-  ├── applier.apply_settings(merged["settings"])
-  │     └── PolicyChain.evaluate(key, value) per key  [optional gate]
-  ├── applier.apply_keybindings(merged["keybindings"])
-  ├── applier.apply_aliases(merged["aliases"])
-  ├── emit LayerAppliedEvent per layer
-  ├── FSM: → ACTIVE (or ERROR)
-  └── lifecycle: POST_APPLY
-        │
-        ▼
-orchestrator.apply_host_policies(applier)
-  ├── HostPolicyRegistry.active() → config.set(k, v, pattern=…)   [structured]
-  └── BehaviorLayer.host_policies() → config.set(k, v, pattern=…) [legacy/escape]
+          ├── ConfigStateMachine     IDLE → LOADING → VALIDATING → APPLYING → ACTIVE
+          ├── MessageRouter          EventBus + CommandBus + QueryBus
+          ├── LifecycleManager       PRE_INIT → POST_INIT → PRE_APPLY → POST_APPLY
+          ├── HostPolicyRegistry     per-host config.set(…, pattern=…) rules
+          ├── HealthChecker          post-apply validation (6 built-in checks)
+          └── IncrementalApplier     delta-only hot reload
 ```
 
 ---
 
 ## Design Principles
 
-| Principle                 | Implementation                                                                                    |
-| ------------------------- | ------------------------------------------------------------------------------------------------- |
-| **Dependency Inversion**  | Layers depend on `LayerProtocol`; orchestrator depends on abstractions. No layer imports another. |
-| **Single Responsibility** | `pipeline.py` transforms data, `state.py` tracks FSM, `protocol.py` routes messages.              |
-| **Open/Closed**           | New layers, stages, strategies, policies, themes register without modifying existing code.        |
-| **Layered Architecture**  | Strict priority ordering; higher layers override lower; no circular dependencies.                 |
-| **Pipeline / Data Flow**  | Config flows as `ConfigPacket` through composable `PipeStage` chains.                             |
-| **State Machine**         | Lifecycle is explicit — no implicit state mutation; transitions are data-driven.                  |
-| **Strategy Pattern**      | Privacy profiles, performance profiles, merge algorithms, search engines are interchangeable.     |
-| **Policy Chain**          | Validation / gating rules (JS, cookies, WebRTC) compose via Chain of Responsibility.              |
-| **Event-Driven / CQRS**   | Cross-module communication via typed events — never direct imports between top-level modules.     |
-| **Incremental/Delta**     | Hot-reload computes and applies only changed keys, not the full config.                           |
-| **Data-Driven**           | Per-host overrides, search engines, color schemes — expressed as data, not code.                  |
+| Principle                 | Implementation                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------ |
+| **Dependency Inversion**  | Layers depend on `LayerProtocol`; orchestrator depends on abstractions         |
+| **Single Responsibility** | `pipeline.py` transforms, `state.py` tracks FSM, `protocol.py` routes          |
+| **Open/Closed**           | New layers/stages/strategies/policies register without modifying existing code |
+| **Layered Architecture**  | Strict priority; higher layers override lower; no circular deps                |
+| **Pipeline / Data Flow**  | Config flows as `ConfigPacket` through composable `PipeStage` chains           |
+| **State Machine**         | Lifecycle is explicit; transitions are data-driven                             |
+| **Strategy Pattern**      | Privacy, performance, merge, search engines are interchangeable                |
+| **Policy Chain**          | Validation rules compose via Chain of Responsibility                           |
+| **Event-Driven / CQRS**   | Cross-module via typed events — never direct imports between modules           |
+| **Incremental/Delta**     | Hot-reload applies only changed keys                                           |
+| **Data-Driven**           | Host rules, search engines, color schemes are data not code                    |
+| **Health Checks**         | Post-apply validation catches misconfiguration before it silently fails        |
 
 ---
 
@@ -168,328 +78,127 @@ orchestrator.apply_host_policies(applier)
 | `layer.py`       | `LayerProtocol` + `LayerStack` + `BaseConfigLayer`                |
 | `strategy.py`    | `Strategy` + `Policy` + `PolicyChain` + registry infrastructure   |
 | `incremental.py` | `ConfigSnapshot` + `ConfigDiffer` + `IncrementalApplier`          |
+| `health.py`      | `HealthChecker` + built-in checks — post-apply config validation  |
 
 ### `layers/`
 
-| Layer            | Priority | Description                                                     |
-| ---------------- | -------- | --------------------------------------------------------------- |
-| `base.py`        | 10       | Foundational defaults; applied first; overridable by all        |
-| `privacy.py`     | 20       | WebRTC, cookies, HTTPS, adblock, fingerprinting                 |
-| `appearance.py`  | 30       | Themes, fonts, colors                                           |
-| `behavior.py`    | 40       | UX, Vim keybindings, per-host policies                          |
-| `performance.py` | 50       | Cache, rendering, DNS prefetch                                  |
-| `user.py`        | 90       | Personal overrides; driven by `config.py` (never edit directly) |
-
-### `strategies/`
-
-| Module        | Responsibility                                                          |
-| ------------- | ----------------------------------------------------------------------- |
-| `merge.py`    | LastWins / FirstWins / DeepMerge / ProfileAware config merge algorithms |
-| `profile.py`  | `UnifiedProfile` — single knob → (privacy, performance) resolution      |
-| `search.py`   | Named search engine sets: base, dev, privacy, academia, chinese, full   |
-| `download.py` | Download dispatcher auto-detection: handlr → rifle → xdg-open → none    |
-
-### `policies/`
-
-| Module        | Responsibility                                                             |
-| ------------- | -------------------------------------------------------------------------- |
-| `content.py`  | JS / Cookie / Autoplay / Canvas / LocalStorage / WebRTC per-profile policy |
-| `network.py`  | DNS prefetch / Referrer / Proxy / HTTPS enforcement                        |
-| `security.py` | Geolocation / MediaCapture / Notifications / Clipboard / MixedContent      |
-| `host.py`     | `HostRule` + `HostPolicyRegistry` — structured per-domain exceptions       |
-
-### `themes/`
-
-| Module        | Responsibility                                                                          |
-| ------------- | --------------------------------------------------------------------------------------- |
-| `extended.py` | 8 extra color schemes: nord, dracula, solarized-\*, one-dark, everforest, modus-vivendi |
-
-### `keybindings/`
-
-| Module       | Responsibility                                                                 |
-| ------------ | ------------------------------------------------------------------------------ |
-| `catalog.py` | `KeybindingCatalog` — query, conflict detection, Markdown reference generation |
-
-### `scripts/` (userscripts)
-
-| Script           | Binding       | Description                                       |
-| ---------------- | ------------- | ------------------------------------------------- |
-| `readability.py` | `,R`          | Reader mode via Mozilla Readability               |
-| `password.py`    | `,p` / `,P`   | pass integration (fill / OTP)                     |
-| `open_with.py`   | `,o` / `,m`   | Open URL with external app (mpv, zathura, feh, …) |
-| `search_sel.py`  | `,/` / `,sg`  | Search selected text in any configured engine     |
-| `tab_restore.py` | `,Ss` / `,Sr` | Named session save/restore (plain URL lists)      |
+| Layer            | Priority | Description                              |
+| ---------------- | -------- | ---------------------------------------- |
+| `base.py`        | 10       | Foundational defaults; applied first     |
+| `privacy.py`     | 20       | WebRTC, cookies, HTTPS, adblock          |
+| `appearance.py`  | 30       | Themes, fonts, colors                    |
+| `behavior.py`    | 40       | UX, Vim keybindings, per-host overrides  |
+| `performance.py` | 50       | Cache, rendering, DNS prefetch           |
+| `user.py`        | 90       | Personal overrides (driven by config.py) |
 
 ---
 
 ## Configuration Guide
 
-**All user-facing options are in `config.py`** — there are two sections:
-
-### CONFIGURATION SECTION (top-level choices)
+Edit only the `CONFIGURATION SECTION` and `USER PREFERENCE SECTION` in `config.py`:
 
 ```python
-THEME              = "catppuccin-mocha"          # visual theme
-PRIVACY_PROFILE    = PrivacyProfile.STANDARD     # STANDARD | HARDENED | PARANOID
-PERFORMANCE_PROFILE= PerformanceProfile.BALANCED # BALANCED | HIGH | LOW | LAPTOP
-LEADER_KEY         = ","                         # prefix for multi-key bindings
-LAYERS             = {"base": True, ..., "user": True}
+# ── Theme (17 options) ────────────────────────────────────────────────────────
+THEME = "catppuccin-mocha"
 
-HOST_POLICY_LOGIN  = True   # Google/GitHub login cookies
+# ── Privacy profile ───────────────────────────────────────────────────────────
+PRIVACY_PROFILE = PrivacyProfile.STANDARD   # STANDARD | HARDENED | PARANOID
+
+# ── Performance profile ───────────────────────────────────────────────────────
+PERFORMANCE_PROFILE = PerformanceProfile.BALANCED  # BALANCED | HIGH | LOW | LAPTOP
+
+# ── Leader key ────────────────────────────────────────────────────────────────
+LEADER_KEY = ","
+
+# ── Per-host policy categories ────────────────────────────────────────────────
+HOST_POLICY_LOGIN  = True   # Google, GitHub, GitLab
 HOST_POLICY_SOCIAL = True   # Discord, Notion, Bilibili
-HOST_POLICY_MEDIA  = True   # YouTube, Twitch (autoplay blocked)
-```
+HOST_POLICY_MEDIA  = True   # YouTube, Twitch
 
-### USER PREFERENCE SECTION (personal overrides)
-
-```python
-USER_EDITOR       = ["kitty", "-e", "nvim", "{}"]   # external editor
-USER_START_PAGES  = ["https://www.bilibili.com"]     # start / new-tab page
-USER_ZOOM         = None                             # default zoom, e.g. "110%"
-USER_SPELLCHECK   = None                             # e.g. ["en-US", "zh-CN"]
-USER_SEARCH_ENGINES = None                           # extra search shortcuts
-USER_EXTRA_SETTINGS  = {}                            # any qutebrowser key
-USER_EXTRA_BINDINGS  = [...]                         # (key, command, mode) tuples
-USER_EXTRA_ALIASES   = {}                            # :alias_name = command
-```
-
-You **never** need to edit `layers/user.py` — it is a data receiver wired by `config.py`.
-
----
-
-## Keybindings Reference
-
-### Normal Mode — Core
-
-| Key          | Action                       |
-| ------------ | ---------------------------- |
-| `f` / `F`    | Hint links / open in new tab |
-| `;d` / `;y`  | Hint: download / yank link   |
-| `;r`         | Rapid hint: open many tabs   |
-| `J` / `K`    | Prev / next tab              |
-| `H` / `L`    | Back / forward               |
-| `d` / `u`    | Close tab / undo close       |
-| `th` / `tl`  | Move tab left / right        |
-| `tp` / `tm`  | Pin / mute tab               |
-| `gg` / `G`   | Scroll top / bottom          |
-| `<ctrl-d/u>` | Half-page down / up          |
-| `<alt-1..9>` | Jump to tab 1–9              |
-| `yy` / `yt`  | Yank URL / title             |
-| `m` / `'`    | Save / load quickmark        |
-| `v`          | Enter caret mode             |
-
-### Leader Key (`,` by default)
-
-| Key    | Action                                     |
-| ------ | ------------------------------------------ |
-| `,r`   | Reload config (`:config-source`)           |
-| `,e`   | Edit config (`:config-edit`)               |
-| `,j`   | Toggle JavaScript                          |
-| `,i`   | Toggle images                              |
-| `,c`   | Cycle cookie policy                        |
-| `,s`   | Force HTTPS reload                         |
-| `,p`   | Open private tab                           |
-| `,q`   | Quit / `,Q` quit + save session            |
-| `,x`   | Close tab / `,X` undo                      |
-| `,y/Y` | Yank URL / to primary                      |
-| `,o`   | Open URL with best external app            |
-| `,m`   | Open URL in mpv                            |
-| `,R`   | Reader mode (readability)                  |
-| `,/`   | Search selection (default engine, new tab) |
-| `,sg`  | Search selection in Google                 |
-| `,sw`  | Search selection in Wikipedia              |
-| `,lm`  | Copy as Markdown link `[title](url)`       |
-| `gx`   | Open clipboard URL in new tab              |
-| `;m`   | Hint: open link in mpv                     |
-
-For the full generated reference with all modes and conflict report:
-
-```bash
-python3 -c "
-from keybindings.catalog import KeybindingCatalog
-from layers.base import BaseLayer
-from layers.behavior import BehaviorLayer
-from layers.privacy import PrivacyLayer, PrivacyProfile
-from layers.user import UserLayer
-catalog = KeybindingCatalog.from_layers([
-    BaseLayer(), BehaviorLayer(), PrivacyLayer(), UserLayer()
-])
-print(catalog.reference_all())
-print(catalog.conflict_report())
-"
+# ── Personal overrides ────────────────────────────────────────────────────────
+USER_EDITOR       = ["kitty", "-e", "nvim", "{}"]
+USER_START_PAGES  = ["https://www.bilibili.com"]
+USER_ZOOM         = None          # e.g. "110%"
+USER_SPELLCHECK   = None          # e.g. ["en-US"]
+USER_SEARCH_ENGINES = None        # replaces url.searchengines
+USER_EXTRA_SETTINGS = {}          # escape hatch for any qutebrowser setting
+USER_EXTRA_BINDINGS = [...]       # (key, command, mode) tuples
+USER_EXTRA_ALIASES  = {}          # {name: command}
 ```
 
 ---
 
 ## Themes
 
-### Built-in
+### Built-in (5)
 
-| Name               | Style            |
-| ------------------ | ---------------- |
-| `catppuccin-mocha` | Dark, pastel     |
-| `catppuccin-latte` | Light, pastel    |
-| `gruvbox-dark`     | Dark, retro warm |
-| `tokyo-night`      | Dark, cool blue  |
-| `rose-pine`        | Dark, rosewood   |
+`catppuccin-mocha` · `catppuccin-latte` · `gruvbox-dark` · `tokyo-night` · `rose-pine`
 
-### Extended (`themes/extended.py`)
+### Extended (12)
 
-| Name              | Style                       |
-| ----------------- | --------------------------- |
-| `nord`            | Dark, arctic blue           |
-| `dracula`         | Dark, purple                |
-| `solarized-dark`  | Dark, precision engineered  |
-| `solarized-light` | Light, precision engineered |
-| `one-dark`        | Dark, Atom-inspired         |
-| `everforest-dark` | Dark, nature green          |
-| `gruvbox-light`   | Light, retro warm           |
-| `modus-vivendi`   | Dark, WCAG AAA accessible   |
+`nord` · `dracula` · `solarized-dark` · `solarized-light` · `one-dark` · `everforest-dark`
+`gruvbox-light` · `modus-vivendi` · `catppuccin-macchiato` · `catppuccin-frappe` · `kanagawa` · `palenight`
 
-Set in `config.py`:
-
-```python
-THEME = "nord"
-```
-
-### Adding a Custom Theme
-
-```python
-# themes/extended.py — add to EXTENDED_THEMES dict:
-"my-theme": ColorScheme(
-    bg="#1a1b26", bg_alt="#16161e", bg_surface="#24283b",
-    fg="#a9b1d6", fg_dim="#565f89", fg_strong="#c0caf5",
-    accent="#7aa2f7", accent2="#bb9af7",
-    success="#9ece6a", warning="#e0af68", error="#f7768e", info="#7dcfff",
-    hint_bg="#1a1b26", hint_fg="#f7768e", hint_border="#7aa2f7",
-    select_bg="#283457", select_fg="#c0caf5",
-    font_mono="JetBrainsMono Nerd Font", font_sans="Noto Sans",
-),
-```
+Set `THEME = "kanagawa"` in `config.py`. Add your own to `themes/extended.py`.
 
 ---
 
 ## Privacy Profiles
 
-| Profile    | Description                                                                                      |
-| ---------- | ------------------------------------------------------------------------------------------------ |
-| `STANDARD` | Sensible defaults: adblock + EasyList, WebRTC restricted, same-domain referer. Minimal breakage. |
-| `HARDENED` | No cookies (default), no local storage, no referer headers, TLS errors blocked.                  |
-| `PARANOID` | JS disabled, images disabled, all cookies blocked, Tor proxy (`socks://localhost:9050`).         |
+| Profile    | Description                                      | Breakage |
+| ---------- | ------------------------------------------------ | -------- |
+| `STANDARD` | Adblock, no 3rd-party cookies, WebRTC restricted | minimal  |
+| `HARDENED` | No cookies, no local storage, strict TLS         | moderate |
+| `PARANOID` | No JS, no images, Tor proxy, all cookies off     | severe   |
 
-Per-host exceptions for HARDENED / PARANOID: configure `HOST_POLICY_*` flags in `config.py`,
-or add custom rules in `policies/host.py`.
+---
+
+## Key Bindings (selected)
+
+| Key       | Command                | Layer    |
+| --------- | ---------------------- | -------- |
+| `J` / `K` | prev / next tab        | behavior |
+| `H` / `L` | back / forward         | behavior |
+| `f` / `F` | hint / hint all tab    | behavior |
+| `,r`      | reload config          | behavior |
+| `,j`      | toggle JavaScript      | privacy  |
+| `,i`      | toggle images          | privacy  |
+| `,o`      | open with external app | user     |
+| `,m`      | open with mpv          | user     |
+| `,R`      | reader mode            | user     |
+| `gx`      | open clipboard URL     | user     |
+
+Full reference: run `python3 scripts/gen_keybindings.py` → `docs/KEYBINDINGS.md`
 
 ---
 
 ## Userscripts
 
-### `open_with.py` — Open with External App
-
-Auto-detects the best application based on URL type:
-
-| URL type     | App tried (in order)      |
-| ------------ | ------------------------- |
-| Video/stream | mpv → vlc → celluloid     |
-| Audio        | mpv → vlc                 |
-| Image        | imv → feh → eog           |
-| PDF          | zathura → evince → okular |
-| Fallback     | xdg-open                  |
-
-Bindings: `,o` (auto), `,m` (force mpv), `;m` (hint link → mpv)
-
-### `search_sel.py` — Search Selection
-
-Select text in caret mode (`v`), then:
-
-- `,/` → search in default engine (new tab)
-- `,sg` → search in Google
-- `,sw` → search in Wikipedia
-
-### `readability.py` — Reader Mode
-
-Strips page chrome, renders article as clean HTML with Catppuccin styling.
-Requires: `pip install readability-lxml`
-Binding: `,R`
-
-### `password.py` — pass Integration
-
-Fills login forms from `pass` entries. Wayland-native (`wl-copy`), X11 fallback.
-Bindings: `,p` (fill) · `,P` (OTP)
-
-### `tab_restore.py` — Named Sessions
-
-Saves / restores named tab sessions as plain URL lists.
-Bindings (uncomment in `config.py`):
-
-- `,Ss work` → save current tab(s) as session "work"
-- `,Sr work` → restore session "work"
-- `,Sl` → list all saved sessions
-
----
-
-## Extending the Architecture
-
-See [docs/EXTENDING.md](docs/EXTENDING.md) for the full guide.
-
-### Add a Layer
-
-```python
-# layers/myfeature.py
-from core.layer import BaseConfigLayer
-
-class MyFeatureLayer(BaseConfigLayer):
-    name = "myfeature"
-    priority = 45          # between behavior(40) and performance(50)
-
-    def _settings(self): return {"some.key": "value"}
-    def _keybindings(self): return [(f"{self._leader}x", "some-command", "normal")]
-```
-
-Register in `config.py` LAYERS dict + `_build_orchestrator()`.
-
-### Add a Theme
-
-Add a `ColorScheme` entry to `themes/extended.py` → `EXTENDED_THEMES`, then set `THEME = "your-name"`.
-
-### Add a Per-Host Exception
-
-```python
-# In config.py USER PREFERENCE SECTION:
-# Or directly in policies/host.py for permanent rules.
-```
-
-### Add a Userscript Binding
-
-```python
-USER_EXTRA_BINDINGS = [
-    (",u", "spawn --userscript my_script.py", "normal"),
-]
-```
+| Script               | Binding | Description                         |
+| -------------------- | ------- | ----------------------------------- |
+| `open_with.py`       | `,o`    | Open URL with best external app     |
+| `readability.py`     | `,R`    | Reader mode                         |
+| `search_sel.py`      | `,/`    | Search selection in new tab         |
+| `password.py`        | `,p`    | pass integration                    |
+| `tab_restore.py`     | —       | Named session save/restore          |
+| `gen_keybindings.py` | —       | Auto-generate `docs/KEYBINDINGS.md` |
 
 ---
 
 ## Testing
 
 ```bash
-# Core architecture (67 tests)
-python3 tests/test_architecture.py
+python3 tests/test_architecture.py   # 42 tests
+python3 tests/test_incremental.py    # 25 tests
+python3 tests/test_extensions.py     # 64 tests
+python3 tests/test_health.py         # 22 tests  (NEW v4)
+# Total: 153 tests, 0 failures
 
-# Incremental + lifecycle (25 tests)
-python3 tests/test_incremental.py
-
-# Extension modules (64 tests)
-python3 tests/test_extensions.py
-
-# All with pytest
-pip install pytest && pytest tests/ -v
-
-# Syntax check everything
+# Syntax check
 python3 -m py_compile config.py orchestrator.py \
-  core/*.py layers/*.py strategies/*.py policies/*.py themes/*.py keybindings/*.py
+  core/*.py layers/*.py strategies/*.py policies/*.py themes/*.py \
+  keybindings/*.py scripts/gen_keybindings.py
 ```
-
-Expected: **156 tests, 0 failures**
 
 ---
 
@@ -497,126 +206,110 @@ Expected: **156 tests, 0 failures**
 
 ```
 qutebrowser-config/
+├── config.py               ← ONLY file you edit
+├── orchestrator.py         ← composition root
 │
-├── config.py               ← entry point (edit CONFIGURATION + USER PREFERENCE sections)
-├── orchestrator.py         ← composition root; wires all modules
+├── core/                   ← stable architecture
+│   ├── pipeline.py         ← ConfigPacket + Pipeline
+│   ├── state.py            ← FSM + transitions
+│   ├── lifecycle.py        ← LifecycleManager
+│   ├── protocol.py         ← MessageRouter (EventBus/CommandBus/QueryBus)
+│   ├── layer.py            ← LayerProtocol + LayerStack
+│   ├── strategy.py         ← Strategy + Policy + PolicyChain
+│   ├── incremental.py      ← delta apply + snapshots
+│   └── health.py           ← HealthChecker  [NEW v4]
 │
-├── core/                   ← architecture (stable; rarely modified)
-│   ├── pipeline.py         ← ConfigPacket + PipeStage + Pipeline
-│   ├── state.py            ← ConfigStateMachine + FSM transition table
-│   ├── lifecycle.py        ← LifecycleManager + hooks
-│   ├── protocol.py         ← MessageRouter (EventBus + CommandBus + QueryBus)
-│   ├── layer.py            ← LayerProtocol + LayerStack + BaseConfigLayer
-│   ├── strategy.py         ← Strategy + Policy + Registry + PolicyChain
-│   └── incremental.py      ← ConfigSnapshot + ConfigDiffer + IncrementalApplier
+├── layers/                 ← extend here
+│   ├── base.py  [p=10] · privacy.py [p=20] · appearance.py [p=30]
+│   ├── behavior.py [p=40] · performance.py [p=50] · user.py [p=90]
 │
-├── layers/                 ← configuration layers (extend here)
-│   ├── base.py             [p=10]  foundational defaults
-│   ├── privacy.py          [p=20]  blocking, cookies, WebRTC
-│   ├── appearance.py       [p=30]  themes, fonts, colors
-│   ├── behavior.py         [p=40]  keybindings, per-host overrides
-│   ├── performance.py      [p=50]  cache, rendering
-│   └── user.py             [p=90]  personal overrides (driven by config.py)
+├── strategies/  merge.py · profile.py · search.py · download.py
+├── policies/    content.py · network.py · security.py · host.py
+├── themes/      extended.py  (12 extra themes)
+├── keybindings/ catalog.py   (query + conflict detection)
 │
-├── strategies/             ← pluggable algorithms
-│   ├── merge.py            ← LastWins / FirstWins / DeepMerge / ProfileAware
-│   ├── profile.py          ← UnifiedProfile → (privacy, perf) resolution
-│   ├── search.py           ← named search engine sets
-│   └── download.py         ← download dispatcher auto-selection
+├── scripts/
+│   ├── install.sh          ← deployment
+│   ├── gen_keybindings.py  ← auto-gen KEYBINDINGS.md  [NEW v4]
+│   ├── open_with.py · readability.py · password.py
+│   ├── search_sel.py · tab_restore.py
 │
-├── policies/               ← declarative policy rules
-│   ├── content.py          ← JS, cookies, autoplay, canvas, WebRTC
-│   ├── network.py          ← DNS, referrer, proxy, HTTPS
-│   ├── security.py         ← geolocation, media, clipboard, mixed-content
-│   └── host.py             ← HostRule + HostPolicyRegistry
+├── tests/
+│   ├── test_architecture.py (42) · test_incremental.py (25)
+│   ├── test_extensions.py (64)  · test_health.py (22)
 │
-├── themes/                 ← color scheme extensions
-│   └── extended.py         ← 8 extra themes
-│
-├── keybindings/            ← keybinding tooling
-│   └── catalog.py          ← query, conflict detection, reference generation
-│
-├── docs/                   ← documentation
-│   ├── ARCHITECTURE.md     ← deep architecture reference
-│   ├── EXTENDING.md        ← extension guide for layer / policy / theme authors
-│   └── KEYBINDINGS.md      ← full keybinding reference (auto-generatable)
-│
-├── scripts/                ← userscripts
-│   ├── install.sh          ← deployment script
-│   ├── readability.py      ← reader mode
-│   ├── password.py         ← pass integration
-│   ├── open_with.py        ← open URL with external app (mpv, zathura, …)
-│   ├── search_sel.py       ← search selected text
-│   └── tab_restore.py      ← named session save/restore
-│
-└── tests/
-    ├── test_architecture.py   ← 67 core + layer tests
-    ├── test_incremental.py    ← 25 incremental + lifecycle tests
-    └── test_extensions.py     ← 64 strategy + policy + theme + catalog tests
+└── docs/
+    ├── ARCHITECTURE.md · EXTENDING.md · KEYBINDINGS.md
 ```
+
+---
+
+## Extending
+
+### Add a Theme
+
+Add `ColorScheme(…)` to `themes/extended.py` → `EXTENDED_THEMES`, then set `THEME`.
+
+### Add a Layer (example: work layer at priority 60)
+
+```python
+# layers/work.py
+from core.layer import BaseConfigLayer
+class WorkLayer(BaseConfigLayer):
+    name = "work"; priority = 60
+    def _settings(self):
+        return {"url.searchengines": {"DEFAULT": "https://intranet.co?q={}"}}
+```
+
+Register in `config.py`'s `_build_orchestrator()`.
+
+### Add a Per-Host Rule
+
+Add a `HostRule(…)` to the appropriate list in `policies/host.py`.
+
+### Add a Health Check
+
+Subclass `HealthCheck` in `core/health.py`, then `.add(MyCheck())` to `HealthChecker.default()`.
 
 ---
 
 ## Troubleshooting
 
-### `Error while loading config.py` in qutebrowser log
+**`Error while loading config.py`** → `python3 -m py_compile config.py`
 
-This is qutebrowser's own message when any `config.set()` call fails.
-Check `:messages` in qutebrowser, or run:
+**Keybinding not working** → `python3 scripts/gen_keybindings.py --stdout` to inspect conflicts
 
-```bash
-python3 -m py_compile config.py && echo "syntax ok"
-```
+**Theme not found** → ensure `themes/extended.py` is deployed + `register_all_themes()` called
 
-### Keybinding not working
+**Health warnings in log** → informational only; config still applied. Review the flagged setting.
 
-1. Check for conflicts: `python3 -c "from keybindings.catalog import ...; print(catalog.conflict_report())"`
-2. Ensure the binding mode is correct (`"normal"`, `"insert"`, `"command"`, …)
-3. Run `:bind` in qutebrowser to see all active bindings
-
-### Theme not found
-
-Ensure `themes/extended.py` is deployed and `themes/__init__.py` exists.
-Check that `register_all_themes()` is called before `AppearanceLayer` is instantiated.
-
-### Privacy keybindings use wrong leader key
-
-Ensure `PrivacyLayer` is constructed with `leader=LEADER_KEY` in `_build_orchestrator()`.
-
-### FSM `no transition` WARNING
-
-This was a v1 bug (spurious `APPLY_START` event). Fixed in v2+.
-If you see it in v3, a custom lifecycle hook is sending an unexpected event.
+**FSM `no transition` WARNING** → a lifecycle hook is sending an unexpected event; check `@lifecycle.decorator(…)` registrations.
 
 ---
 
 ## Changelog
 
-### v3 (current)
+### v4 (current)
 
-**New modules:**
+- **New**: `core/health.py` — `HealthChecker` + 6 built-in checks integrated into `orchestrator.apply()`
+- **New**: `scripts/gen_keybindings.py` — auto-generates `docs/KEYBINDINGS.md`
+- **Fix**: `appearance.py` — `_font_settings()` now uses `ColorScheme.font_size_ui` (was hard-coded `"10pt"`)
+- **Fix**: `behavior.py` — removed invalid `downloads.open_dispatcher: None`
+- **Fix**: `privacy.py` — updated Chrome UA version (134→124)
+- **New themes**: `catppuccin-macchiato`, `catppuccin-frappe`, `kanagawa`, `palenight` (17 total)
+- **New bindings**: prompt mode, hint escape, window management (`,n`, `,N`)
+- **New engines**: `npm`, `dh` (Docker Hub), `tf` (Terraform) in dev search set
+- **22 new tests** (total: **153**)
 
-- `strategies/` — merge, profile (UnifiedProfile), search engine sets, download dispatcher
-- `policies/` — content, network, security, host (HostPolicyRegistry)
-- `themes/extended.py` — 8 additional color schemes
-- `keybindings/catalog.py` — query, conflict detection, reference generation
-- `scripts/open_with.py` — open URL with best external app
-- `scripts/search_sel.py` — search selected text
-- `scripts/tab_restore.py` — named session save/restore
+### v3
 
-**Architectural changes:**
-
-- `UserLayer` is now parameter-injected; users never edit `layers/user.py`
-- `config.py` exposes full USER PREFERENCE SECTION (8 knobs)
-- `ConfigOrchestrator` integrates `HostPolicyRegistry` alongside BehaviorLayer
-- `ConfigApplier.apply_settings()` accepts optional `PolicyChain` for per-key gating
-- `install.sh` updated to deploy all new package directories
-- 64 new tests (total: 156)
+- `strategies/` — merge, profile, search, download
+- `policies/` — content, network, security, host
+- 8 extended themes · keybinding catalog · 3 userscripts
+- 64 new tests (total: 131)
 
 ### v2
 
-- FSM spurious APPLY_START WARNING fixed
-- Dead duplicate code in `state.py` removed
+- FSM spurious `APPLY_START` WARNING fixed
 - `PrivacyLayer` leader-key parameterisation
-- `ValidateStage` fixed to inspect `packet.data["settings"]` correctly
-- `orchestrator.summary()` logs actual setting counts
+- `ValidateStage` fixed to inspect nested `packet.data["settings"]`

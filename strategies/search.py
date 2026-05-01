@@ -23,6 +23,8 @@ from core.strategy import ConfigDict, Strategy, StrategyRegistry
 logger = logging.getLogger("qute.strategies.search")
 
 SearchEngineMap = Dict[str, str]
+# Public alias used in __init__.py exports
+SearchEngineSet = SearchEngineMap
 
 
 # ─────────────────────────────────────────────
@@ -45,6 +47,9 @@ _DEV_EXTRAS: SearchEngineMap = {
     "docs":   "https://devdocs.io/#q={}",
     "rs":     "https://doc.rust-lang.org/std/?search={}",
     "go":     "https://pkg.go.dev/search?q={}",
+    "npm":    "https://www.npmjs.com/search?q={}",
+    "dh":     "https://hub.docker.com/search?q={}",
+    "tf":     "https://registry.terraform.io/search/modules?q={}",
 }
 
 _PRIVACY_EXTRAS: SearchEngineMap = {
