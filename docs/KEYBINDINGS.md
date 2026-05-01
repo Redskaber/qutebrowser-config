@@ -1,6 +1,6 @@
 # Keybindings Reference
 
-> Auto-generated on 2026-05-01 05:09. Do not edit manually — run `python3 scripts/gen_keybindings.py` to update.
+> Auto-generated on 2026-05-01 13:34. Do not edit manually — run `python3 scripts/gen_keybindings.py` to update.
 
 ## Table of Contents
 
@@ -11,6 +11,16 @@
 - [Normal Mode](#normal-mode-keybindings)
 - [Prompt Mode](#prompt-mode-keybindings)
 - [Conflicts](#conflicts)
+
+## Layer Sources
+
+| Layer           | Responsibility                             |
+| --------------- | ------------------------------------------ |
+| base [p=10]     | Foundational navigation, open, yank, zoom  |
+| privacy [p=20]  | Privacy toggle keybindings                 |
+| behavior [p=40] | Vim-style UX, tabs, hints, leader bindings |
+| context [p=45]  | Context-switch bindings (active: dev)      |
+| user [p=90]     | Personal overrides (highest priority)      |
 
 ### Caret Mode Keybindings
 
@@ -49,6 +59,12 @@
 | ---------- | ----------------------------------------------------------- | -------- |
 | `"`        | `cmd-set-text :quickmark-load -t `                          | behavior |
 | `'`        | `cmd-set-text :quickmark-load `                             | behavior |
+| `,C0`      | `spawn --userscript context_switch.py default`              | context  |
+| `,Cd`      | `spawn --userscript context_switch.py dev`                  | context  |
+| `,Ci`      | `message-info 'Context: {env[QUTE_CONTEXT]}'`               | context  |
+| `,Cm`      | `spawn --userscript context_switch.py media`                | context  |
+| `,Cr`      | `spawn --userscript context_switch.py research`             | context  |
+| `,Cw`      | `spawn --userscript context_switch.py work`                 | context  |
 | `,D`       | `download-delete`                                           | behavior |
 | `,N`       | `open -p -w`                                                | behavior |
 | `,P`       | `open -t -- {primary}`                                      | behavior |

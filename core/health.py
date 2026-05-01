@@ -13,11 +13,23 @@ Principle: fail fast, fail clearly.  Every check has a name and
 a severity so operators know what is critical vs cosmetic.
 
 Patterns: Visitor, Chain of Responsibility, Data Object
+
+Built-in checks (v5):
+  BlockingEnabledCheck        — content.blocking.enabled should be True
+  SearchEngineDefaultCheck    — url.searchengines must have DEFAULT key
+  SearchEngineUrlCheck        — all engine URLs must contain '{}'
+  WebRTCPolicyCheck           — webrtc_ip_handling_policy leak risk
+  CookieAcceptCheck           — all-cookie-accept is suspicious
+  StartPageCheck              — url.start_pages should not be empty
+  EditorCommandCheck          — editor.command must contain "{}" placeholder
+  DownloadDirCheck            — downloads.location.directory should not be /tmp
+  TabTitleFormatCheck         — tabs.title.format should reference {current_title}
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -65,18 +77,33 @@ class HealthReport:
         return [i for i in self.issues if i.severity == Severity.WARNING]
 
     @property
+    def infos(self) -> List[HealthIssue]:
+        return [i for i in self.issues if i.severity == Severity.INFO]
+
+    @property
     def ok(self) -> bool:
         return len(self.errors) == 0
 
     def summary(self) -> str:
         n_e = len(self.errors)
         n_w = len(self.warnings)
-        n_i = len([i for i in self.issues if i.severity == Severity.INFO])
+        n_i = len(self.infos)
         status = "✓ HEALTHY" if self.ok else f"✗ {n_e} ERROR(S)"
-        return (
-            f"{status}  warnings={n_w}  info={n_i}\n"
-            + "\n".join(f"  {i}" for i in self.issues if i.severity != Severity.INFO)
-        )
+        lines = [f"{status}  warnings={n_w}  info={n_i}"]
+        for i in self.issues:
+            if i.severity != Severity.INFO:
+                lines.append(f"  {i}")
+        return "\n".join(lines)
+
+    def full_report(self) -> str:
+        """Full report including INFO-level findings."""
+        if not self.issues:
+            return "✓ All health checks passed — no issues found."
+        lines = [self.summary()]
+        if self.infos:
+            lines.append("  Info:")
+            lines.extend(f"    {i}" for i in self.infos)
+        return "\n".join(lines)
 
 
 class HealthCheck(ABC):
@@ -97,36 +124,21 @@ class HealthCheck(ABC):
 class BlockingEnabledCheck(HealthCheck):
     """Warn if content blocking is disabled."""
     name = "blocking-enabled"
-    description = "Content blocking should be enabled for privacy"
+    description = "content.blocking.enabled should be True for privacy"
 
     def run(self, settings: ConfigDict, report: HealthReport) -> None:
-        if not settings.get("content.blocking.enabled", True):
+        enabled = settings.get("content.blocking.enabled", True)
+        if not enabled:
             report.add(HealthIssue(
                 check=self.name,
                 severity=Severity.WARNING,
-                message="content.blocking.enabled is False — adblock disabled",
+                message="content.blocking.enabled=False — ad/tracker blocking is OFF",
                 key="content.blocking.enabled",
             ))
 
 
-class JavaScriptClipboardCheck(HealthCheck):
-    """Warn if JS clipboard access is enabled globally."""
-    name = "js-clipboard"
-    description = "JavaScript clipboard access should be restricted"
-
-    def run(self, settings: ConfigDict, report: HealthReport) -> None:
-        val = settings.get("content.javascript.clipboard", "none")
-        if val not in ("none", "access"):
-            report.add(HealthIssue(
-                check=self.name,
-                severity=Severity.WARNING,
-                message=f"content.javascript.clipboard={val!r} allows write access",
-                key="content.javascript.clipboard",
-            ))
-
-
 class SearchEngineDefaultCheck(HealthCheck):
-    """Error if no DEFAULT search engine is defined."""
+    """Error if no DEFAULT search engine is set."""
     name = "search-default"
     description = "A DEFAULT search engine must exist"
 
@@ -137,6 +149,32 @@ class SearchEngineDefaultCheck(HealthCheck):
                 check=self.name,
                 severity=Severity.ERROR,
                 message="url.searchengines missing 'DEFAULT' key",
+                key="url.searchengines",
+            ))
+
+
+class SearchEngineUrlCheck(HealthCheck):
+    """
+    Warn if any search engine URL template does not contain '{}'.
+
+    Without '{}', searches silently go to the engine's homepage.
+    """
+    name = "search-engine-urls"
+    description = "All search engine URL templates must contain '{}'"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        engines = settings.get("url.searchengines", {})
+        if not isinstance(engines, dict):
+            return
+        bad = [k for k, v in engines.items() if isinstance(v, str) and "{}" not in v]
+        for key in bad:
+            report.add(HealthIssue(
+                check=self.name,
+                severity=Severity.WARNING,
+                message=(
+                    f"url.searchengines[{key!r}]={engines[key]!r} "
+                    "has no '{}' placeholder — searches go to homepage"
+                ),
                 key="url.searchengines",
             ))
 
@@ -198,6 +236,101 @@ class StartPageCheck(HealthCheck):
             ))
 
 
+class EditorCommandCheck(HealthCheck):
+    """
+    Error if editor.command is set but does not contain the '{}' placeholder.
+
+    qutebrowser replaces '{}' with the temp file path; without it, the editor
+    receives no file argument and the edit workflow silently fails.
+    """
+    name = "editor-command"
+    description = "editor.command must contain '{}' placeholder"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        cmd = settings.get("editor.command")
+        if cmd is None:
+            return   # not set — qutebrowser uses its own default
+        if not isinstance(cmd, list):
+            report.add(HealthIssue(
+                check=self.name,
+                severity=Severity.ERROR,
+                message=f"editor.command must be a list, got {type(cmd).__name__}",
+                key="editor.command",
+            ))
+            return
+        if not cmd:
+            report.add(HealthIssue(
+                check=self.name,
+                severity=Severity.ERROR,
+                message="editor.command is an empty list",
+                key="editor.command",
+            ))
+            return
+        if not any("{}" in str(part) for part in cmd):
+            report.add(HealthIssue(
+                check=self.name,
+                severity=Severity.ERROR,
+                message=(
+                    f"editor.command {cmd!r} has no '{{}}' placeholder — "
+                    "qutebrowser will not pass the temp file to the editor"
+                ),
+                key="editor.command",
+            ))
+
+
+class DownloadDirCheck(HealthCheck):
+    """
+    Warn if downloads.location.directory is /tmp or an unsafe path.
+    Files in /tmp are cleaned on reboot.
+    """
+    name = "download-dir"
+    description = "downloads.location.directory should be a persistent path"
+
+    _UNSAFE: frozenset[str] = frozenset({"/tmp", "/var/tmp", "/dev/shm"})
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        dl_dir = settings.get("downloads.location.directory")
+        if dl_dir is None:
+            return
+        expanded = os.path.expanduser(str(dl_dir))
+        try:
+            resolved = os.path.realpath(expanded)
+        except OSError:
+            resolved = expanded
+        if any(resolved == u or resolved.startswith(u + "/") for u in self._UNSAFE):
+            report.add(HealthIssue(
+                check=self.name,
+                severity=Severity.WARNING,
+                message=(
+                    f"downloads.location.directory={dl_dir!r} resolves to {resolved!r} "
+                    "— files in /tmp are lost on reboot"
+                ),
+                key="downloads.location.directory",
+            ))
+
+
+class TabTitleFormatCheck(HealthCheck):
+    """
+    Info if tabs.title.format does not include {current_title}.
+    Without it, all tabs show the same label (confusing UX).
+    """
+    name = "tab-title-format"
+    description = "tabs.title.format should include {current_title}"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        fmt = settings.get("tabs.title.format")
+        if fmt is not None and "{current_title}" not in str(fmt):
+            report.add(HealthIssue(
+                check=self.name,
+                severity=Severity.INFO,
+                message=(
+                    f"tabs.title.format={fmt!r} does not include "
+                    "'{current_title}' — tabs may show identical labels"
+                ),
+                key="tabs.title.format",
+            ))
+
+
 # ─────────────────────────────────────────────
 # Health Checker (runner)
 # ─────────────────────────────────────────────
@@ -210,7 +343,12 @@ class HealthChecker:
 
         checker = HealthChecker.default()
         report  = checker.check(merged_settings)
-        print(report.summary())
+        if not report.ok:
+            logger.warning(report.summary())
+
+    Checks are run in registration order; exceptions inside individual
+    checks are caught and recorded as ERROR-severity issues so one bad
+    check cannot prevent others from running.
     """
 
     def __init__(self) -> None:
@@ -226,23 +364,26 @@ class HealthChecker:
             try:
                 c.run(settings, report)
             except Exception as exc:
-                logger.error("[HealthChecker] check %r raised: %s", c.name, exc)
+                logger.exception("[HealthChecker] check %r raised unexpectedly", c.name)
                 report.add(HealthIssue(
                     check=c.name,
                     severity=Severity.ERROR,
-                    message=f"check itself raised an exception: {exc}",
+                    message=f"Check raised exception: {exc}",
                 ))
         return report
 
     @classmethod
     def default(cls) -> "HealthChecker":
-        """Build a checker with all built-in checks."""
+        """Return a HealthChecker pre-loaded with all built-in checks."""
         return (
             cls()
             .add(BlockingEnabledCheck())
-            .add(JavaScriptClipboardCheck())
             .add(SearchEngineDefaultCheck())
+            .add(SearchEngineUrlCheck())
             .add(WebRTCPolicyCheck())
             .add(CookieAcceptCheck())
             .add(StartPageCheck())
+            .add(EditorCommandCheck())
+            .add(DownloadDirCheck())
+            .add(TabTitleFormatCheck())
         )

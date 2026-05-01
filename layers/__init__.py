@@ -8,6 +8,7 @@ Layer priority table:
   20  PrivacyLayer     — security & privacy hardening
   30  AppearanceLayer  — themes, fonts, colors
   40  BehaviorLayer    — UX, Vim keybindings, per-host overrides
+  45  ContextLayer     — Context, Situational Browser Modes
   50  PerformanceLayer — cache, DNS, rendering
   90  UserLayer        — personal overrides (highest priority)
 
@@ -17,6 +18,7 @@ from layers.base        import BaseLayer
 from layers.privacy     import PrivacyLayer, PrivacyProfile
 from layers.appearance  import AppearanceLayer, ColorScheme, THEMES
 from layers.behavior    import BehaviorLayer, HostPolicy
+from layers.context     import ContextMode, ContextSpec, ContextLayer
 from layers.performance import PerformanceLayer, PerformanceProfile
 from layers.user        import UserLayer
 
@@ -25,6 +27,7 @@ __all__ = [
     "PrivacyLayer", "PrivacyProfile",
     "AppearanceLayer", "ColorScheme", "THEMES",
     "BehaviorLayer", "HostPolicy",
+    "ContextMode", "ContextSpec", "ContextLayer",
     "PerformanceLayer", "PerformanceProfile",
     "UserLayer",
 ]

@@ -16,7 +16,7 @@ layers/workspace.py
 ===================
 Workspace Layer — project-specific browser environments
 
-Priority: 45 (between behavior[40] and performance[50])
+Priority: 60 (between performance[50] and user[90])
 """
 from __future__ import annotations
 from typing import Any, Dict, List, Tuple
@@ -26,7 +26,7 @@ ConfigDict = Dict[str, Any]
 
 class WorkspaceLayer(BaseConfigLayer):
     name        = "workspace"
-    priority    = 45
+    priority    = 60
     description = "Project-specific search engines and keybindings"
 
     def __init__(self, leader: str = ",", workspace: str = "default") -> None:
@@ -42,7 +42,7 @@ class WorkspaceLayer(BaseConfigLayer):
                     "conf":    "https://confluence.mycompany.com/dosearchsite.action?queryString={}",
                 },
             }
-        return {}  # default workspace: no overrides
+        return {}
 
     def _keybindings(self) -> List[Tuple[str, str, str]]:
         L = self._leader
@@ -58,7 +58,7 @@ Register in `config.py`:
 ```python
 from layers.workspace import WorkspaceLayer
 
-# In _build_orchestrator():
+# In _build_orchestrator(), after PerformanceLayer:
 if LAYERS.get("workspace"):
     stack.register(WorkspaceLayer(leader=LEADER_KEY, workspace="work"))
 
@@ -101,15 +101,43 @@ Then in `config.py`:
 THEME = "my-theme"
 ```
 
-The theme is automatically available after `register_all_themes()` is called.
+---
+
+## Adding a Context (Situational Mode)
+
+Contexts are defined as `ContextSpec` entries in `layers/context.py`:
+
+```python
+# In layers/context.py — add to _CONTEXT_TABLE:
+
+ContextMode.WRITING: ContextSpec(
+    mode=ContextMode.WRITING,
+    description="Writing mode — focus, reference tools, no media",
+    search_engines={
+        "DEFAULT": "https://search.brave.com/search?q={}",
+        "dict":    "https://www.merriam-webster.com/dictionary/{}",
+        "thes":    "https://www.thesaurus.com/browse/{}",
+        "gram":    "https://www.grammarly.com/blog/?s={}",
+    },
+    settings_delta={
+        "content.autoplay":            False,
+        "content.notifications.enabled": False,
+        "statusbar.show":              "in-mode",
+    },
+    bindings_extra=[],
+),
+```
+
+Also add `WRITING = "writing"` to the `ContextMode` enum and a keybinding.
+
+Then switch at runtime: set `ACTIVE_CONTEXT = "writing"` in `config.py` or
+run `,Cw` (if you add it to the switch table in `ContextLayer._keybindings()`).
 
 ---
 
 ## Adding a Per-Host Exception
 
-Per-host rules belong in `policies/host.py`, not in `layers/behavior.py`.
-The behavior layer's `host_policies()` method is the _legacy_ path; the
-`HostPolicyRegistry` is the preferred structured approach.
+Per-host rules belong in `policies/host.py`:
 
 ```python
 # policies/host.py — add to the appropriate rule set, or create a new one:
@@ -140,6 +168,40 @@ host_registry.register(HostRule(
     category="work",
     description="Company intranet",
 ))
+```
+
+---
+
+## Adding a Health Check
+
+```python
+# In core/health.py — add a new HealthCheck subclass:
+
+class AutoplayCheck(HealthCheck):
+    """Warn if autoplay is globally enabled (intrusive on most sites)."""
+    name = "autoplay"
+    description = "content.autoplay=True can be intrusive"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        if settings.get("content.autoplay", False) is True:
+            report.add(HealthIssue(
+                check=self.name,
+                severity=Severity.INFO,
+                message="content.autoplay=True — videos play automatically",
+                key="content.autoplay",
+            ))
+```
+
+Register it in `HealthChecker.default()`:
+
+```python
+@classmethod
+def default(cls) -> "HealthChecker":
+    return (
+        cls()
+        ...
+        .add(AutoplayCheck())   # ← add here
+    )
 ```
 
 ---
@@ -192,25 +254,7 @@ class WorkSearchStrategy(Strategy[SearchEngineMap]):
         }
 ```
 
-Register it:
-
-```python
-def build_search_registry() -> StrategyRegistry[SearchEngineMap]:
-    registry = ...
-    registry.register(WorkSearchStrategy())
-    return registry
-```
-
-Use in `layers/user.py`:
-
-```python
-from strategies.search import build_search_registry
-
-def _settings(self) -> ConfigDict:
-    search = build_search_registry()
-    engines = search.apply("work", {})
-    return {"url.searchengines": engines}
-```
+Register it and use in `UserLayer` via `USER_SEARCH_ENGINES`.
 
 ---
 
@@ -219,73 +263,25 @@ def _settings(self) -> ConfigDict:
 ```python
 # config.py wiring section:
 
-@lifecycle.on(LifecycleHook.POST_APPLY)
+@lifecycle.decorator(LifecycleHook.POST_APPLY, priority=100)
 def _on_config_applied() -> None:
     logger.info("Config fully applied — browser is ready")
     # e.g. emit a custom event, write a timestamp file, etc.
-_ = _on_config_applied  # suppress Pyright's reportUnusedFunction
-```
-
-Available hooks (in order):
-
-```
-PRE_INIT → POST_INIT → PRE_APPLY → POST_APPLY
-PRE_RELOAD → POST_RELOAD → ON_ERROR → ON_TEARDOWN
 ```
 
 ---
 
-## Adding a Policy
+## Adding User Keybindings (simplest path)
+
+Just edit `USER_EXTRA_BINDINGS` in `config.py`:
 
 ```python
-# policies/content.py (or a new file):
-
-class ImageBlockPolicy(Policy):
-    """PARANOID: block image loading."""
-    name = "image_block_policy"
-    priority = 40
-
-    def __init__(self, profile: PrivacyProfile) -> None:
-        self._profile = profile
-
-    def evaluate(self, key: str, value: Any, context: ConfigDict) -> Optional[PolicyDecision]:
-        if key != "content.images":
-            return None
-        if self._profile == PrivacyProfile.PARANOID and value is True:
-            return PolicyDecision(
-                action=PolicyAction.MODIFY,
-                reason="PARANOID: images disabled",
-                modified_value=False,
-            )
-        return None
+L = LEADER_KEY   # default ","
+USER_EXTRA_BINDINGS: list[tuple[str, str, str]] = [
+    (f"{L}o",  "spawn --userscript open_with.py",    "normal"),
+    (f"{L}ns", "open -t https://news.ycombinator.com","normal"),
+    # ... add your own
+]
 ```
 
-Add to the factory:
-
-```python
-def build_content_policy_chain(profile: PrivacyProfile) -> PolicyChain:
-    chain = PolicyChain()
-    ...
-    chain.add(ImageBlockPolicy(profile))
-    return chain
-```
-
----
-
-## User-Facing Config (What Users Actually Touch)
-
-Users edit **only** the `CONFIGURATION SECTION` in `config.py`:
-
-```python
-THEME              = "catppuccin-mocha"    # any name from THEMES / extended
-PRIVACY_PROFILE    = PrivacyProfile.STANDARD
-PERFORMANCE_PROFILE= PerformanceProfile.BALANCED
-LEADER_KEY         = ","
-LAYERS             = {"base": True, "user": True, ...}
-```
-
-And optionally `layers/user.py` for personal overrides.
-
-Everything else — `core/`, `strategies/`, `policies/`, `themes/`, `keybindings/` —
-is architecture, not configuration. Users who find themselves editing those
-files are adding features, not configuring.
+UserLayer (priority=90) ensures these win over all lower layers.

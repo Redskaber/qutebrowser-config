@@ -1,7 +1,7 @@
 """
 core/protocol.py
 ================
-Inter-Module Communication Protocol
+Inter-Module Communication Protocol  (v5)
 
 Architecture:
   Publisher → EventBus → [Subscriber, ...]
@@ -15,6 +15,13 @@ Principles:
   - Boundary Explicit: cross-module calls must go through protocol
 
 Pattern: Event-Driven Architecture + CQRS (Command/Query Separation)
+
+v5 additions:
+  - ContextSwitchedEvent(old_context, new_context)
+  - HealthReportReadyEvent(ok, error_count, warning_count)
+  - GetHealthReportQuery()  — allows introspection via QueryBus
+  - GetMergedConfigQuery()  — allows introspection via QueryBus
+  - MessageRouter.emit_health() helper
 
 Strict-mode notes (Pyright):
   - Removed unused imports: ``ABC``, ``abstractmethod``, ``Enum``, ``auto``,
@@ -80,12 +87,12 @@ class Query(Message):
 @dataclass(frozen=True)
 class LayerAppliedEvent(Event):
     layer_name: str = ""
-    key_count: int = 0
+    key_count:  int = 0
 
 
 @dataclass(frozen=True)
 class ConfigErrorEvent(Event):
-    error_msg: str = ""
+    error_msg:  str = ""
     layer_name: str = ""
 
 
@@ -96,9 +103,25 @@ class ThemeChangedEvent(Event):
 
 @dataclass(frozen=True)
 class BindingRegisteredEvent(Event):
-    key: str = ""
+    key:     str = ""
     command: str = ""
-    mode: str = "normal"
+    mode:    str = "normal"
+
+
+@dataclass(frozen=True)
+class ContextSwitchedEvent(Event):
+    """Emitted when the active browsing context changes."""
+    old_context: str = "default"
+    new_context: str = "default"
+
+
+@dataclass(frozen=True)
+class HealthReportReadyEvent(Event):
+    """Emitted after HealthChecker.check() completes."""
+    ok:            bool = True
+    error_count:   int  = 0
+    warning_count: int  = 0
+    info_count:    int  = 0
 
 
 # ─────────────────────────────────────────────
@@ -107,7 +130,7 @@ class BindingRegisteredEvent(Event):
 @dataclass(frozen=True)
 class ApplyLayerCommand(Command):
     layer_name: str = ""
-    priority: int = 50
+    priority:   int = 50
 
 
 @dataclass(frozen=True)
@@ -117,7 +140,7 @@ class ReloadConfigCommand(Command):
 
 @dataclass(frozen=True)
 class SetOptionCommand(Command):
-    key: str = ""
+    key:   str = ""
     value: Any = None
 
 
@@ -126,7 +149,7 @@ class SetOptionCommand(Command):
 # ─────────────────────────────────────────────
 @dataclass(frozen=True)
 class GetOptionQuery(Query):
-    key: str = ""
+    key:     str = ""
     default: Any = None
 
 
@@ -135,12 +158,24 @@ class ListLayersQuery(Query):
     pass
 
 
+@dataclass(frozen=True)
+class GetMergedConfigQuery(Query):
+    """Request the fully-merged settings dict from the orchestrator."""
+    pass
+
+
+@dataclass(frozen=True)
+class GetHealthReportQuery(Query):
+    """Request the latest HealthReport from the orchestrator."""
+    pass
+
+
 # ─────────────────────────────────────────────
 # Event Bus (Pub/Sub)
 # ─────────────────────────────────────────────
-EventHandler   = Callable[[Event], None]
+EventHandler   = Callable[[Event],   None]
 CommandHandler = Callable[[Command], Optional[Any]]
-QueryHandler   = Callable[[Query], Any]
+QueryHandler   = Callable[[Query],   Any]
 
 
 class EventBus:
@@ -162,7 +197,7 @@ class EventBus:
     def subscribe(
         self,
         event_type: Type[Event],
-        handler: EventHandler,
+        handler:    EventHandler,
     ) -> "EventBus":
         topic = event_type.__name__
         with self._lock:
@@ -184,7 +219,7 @@ class EventBus:
         """Publish event; returns count of handlers invoked."""
         topic = event.topic()
         with self._lock:
-            handlers = list(self._subscribers.get(topic, []))
+            handlers  = list(self._subscribers.get(topic, []))
             wildcards = list(self._wildcard)
 
         count = 0
@@ -254,6 +289,11 @@ class QueryBus:
     def register(self, query_type: Type[Query], handler: QueryHandler) -> None:
         topic = query_type.__name__
         self._handlers[topic] = handler
+        logger.debug(
+            "[QueryBus] registered: %s → %s",
+            topic,
+            getattr(handler, "__name__", repr(handler)),
+        )
 
     def ask(self, query: Query) -> Any:
         topic = query.topic()
@@ -270,6 +310,11 @@ class MessageRouter:
     """
     Unified entry point for all inter-module communication.
     Modules receive this; they don't know about each other.
+
+    Three buses:
+      events   — fire-and-forget pub/sub (EventBus)
+      commands — imperative, exactly-one-handler (CommandBus)
+      queries  — request/response, exactly-one-handler (QueryBus)
     """
 
     def __init__(self) -> None:
@@ -278,12 +323,28 @@ class MessageRouter:
         self.queries  = QueryBus()
 
     def emit(self, event: Event) -> int:
+        """Publish an event to all subscribers."""
         return self.events.publish(event)
 
+    def emit_health(
+        self,
+        ok:            bool,
+        error_count:   int,
+        warning_count: int,
+        info_count:    int = 0,
+    ) -> None:
+        """Convenience: emit a HealthReportReadyEvent."""
+        self.emit(HealthReportReadyEvent(
+            ok=ok,
+            error_count=error_count,
+            warning_count=warning_count,
+            info_count=info_count,
+        ))
+
     def send(self, command: Command) -> Optional[Any]:
+        """Dispatch a command to its registered handler."""
         return self.commands.dispatch(command)
 
     def ask(self, query: Query) -> Any:
+        """Ask a query; returns the handler's response."""
         return self.queries.ask(query)
-
-

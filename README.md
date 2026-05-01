@@ -2,7 +2,7 @@
 
 > A principled, layered qutebrowser configuration — built like software, not a script.
 
-**153 tests · 6 layers · 8 core modules · 4 strategy modules · 4 policy modules · 18 themes · NixOS-ready**
+**177 tests · 7 layers · 8 core modules · 4 strategy modules · 4 policy modules · 18 themes · NixOS-ready**
 
 ---
 
@@ -34,13 +34,14 @@ config.py  ← qutebrowser loads ONLY this file
           │     ├── PrivacyLayer     [p=20]  security & tracking protection
           │     ├── AppearanceLayer  [p=30]  theme, fonts, colors
           │     ├── BehaviorLayer    [p=40]  UX, keybindings, per-host rules
+          │     ├── ContextLayer     [p=45]  situational mode (work/research/media/dev)  ← NEW v5
           │     ├── PerformanceLayer [p=50]  cache & rendering tuning
           │     └── UserLayer        [p=90]  personal overrides (highest)
           ├── ConfigStateMachine     IDLE → LOADING → VALIDATING → APPLYING → ACTIVE
           ├── MessageRouter          EventBus + CommandBus + QueryBus
           ├── LifecycleManager       PRE_INIT → POST_INIT → PRE_APPLY → POST_APPLY
           ├── HostPolicyRegistry     per-host config.set(…, pattern=…) rules
-          ├── HealthChecker          post-apply validation (6 built-in checks)
+          ├── HealthChecker          post-apply validation (9 built-in checks)  ← v5: +4 checks
           └── IncrementalApplier     delta-only hot reload
 ```
 
@@ -60,8 +61,43 @@ config.py  ← qutebrowser loads ONLY this file
 | **Policy Chain**          | Validation rules compose via Chain of Responsibility                           |
 | **Event-Driven / CQRS**   | Cross-module via typed events — never direct imports between modules           |
 | **Incremental/Delta**     | Hot-reload applies only changed keys                                           |
-| **Data-Driven**           | Host rules, search engines, color schemes are data not code                    |
+| **Data-Driven**           | Host rules, search engines, color schemes, contexts are data not code          |
 | **Health Checks**         | Post-apply validation catches misconfiguration before it silently fails        |
+| **Context/Situation**     | ContextLayer switches browsing mode (work/research/media/dev) via keybinding   |
+
+---
+
+## Context System (NEW v5)
+
+Switch between situational browsing modes at runtime — no restart needed.
+
+| Key   | Context  | Purpose                                     |
+| ----- | -------- | ------------------------------------------- |
+| `,Cw` | work     | Jira, GitLab, corporate search              |
+| `,Cr` | research | arXiv, Scholar, Wikipedia, distraction-free |
+| `,Cm` | media    | YouTube, Bilibili, Twitch, autoplay ON      |
+| `,Cd` | dev      | GitHub, MDN, crates, npm, DevDocs           |
+| `,C0` | default  | Reset to base defaults                      |
+| `,Ci` | —        | Show current context in message bar         |
+
+Set `ACTIVE_CONTEXT = "dev"` in config.py to permanently activate a context.
+Or use the environment variable: `QUTE_CONTEXT=research qutebrowser`.
+
+---
+
+## Health Checks (v5: 9 checks)
+
+| Check                | Severity | Detects                                         |
+| -------------------- | -------- | ----------------------------------------------- |
+| `blocking-enabled`   | WARNING  | content.blocking.enabled=False                  |
+| `search-default`     | ERROR    | url.searchengines missing DEFAULT key           |
+| `search-engine-urls` | WARNING  | Engine URL has no `{}` placeholder (NEW)        |
+| `webrtc-policy`      | WARNING  | WebRTC leaking local IP                         |
+| `cookie-accept`      | INFO     | Global all-cookies-accepted                     |
+| `start-pages`        | WARNING  | url.start_pages is empty                        |
+| `editor-command`     | ERROR    | editor.command missing `{}` placeholder (NEW)   |
+| `download-dir`       | WARNING  | downloads.location.directory is /tmp (NEW)      |
+| `tab-title-format`   | INFO     | tabs.title.format missing {current_title} (NEW) |
 
 ---
 
@@ -78,115 +114,31 @@ config.py  ← qutebrowser loads ONLY this file
 | `layer.py`       | `LayerProtocol` + `LayerStack` + `BaseConfigLayer`                |
 | `strategy.py`    | `Strategy` + `Policy` + `PolicyChain` + registry infrastructure   |
 | `incremental.py` | `ConfigSnapshot` + `ConfigDiffer` + `IncrementalApplier`          |
-| `health.py`      | `HealthChecker` + built-in checks — post-apply config validation  |
+| `health.py`      | `HealthChecker` — 9 post-apply validation checks                  |
 
 ### `layers/`
 
-| Layer            | Priority | Description                              |
-| ---------------- | -------- | ---------------------------------------- |
-| `base.py`        | 10       | Foundational defaults; applied first     |
-| `privacy.py`     | 20       | WebRTC, cookies, HTTPS, adblock          |
-| `appearance.py`  | 30       | Themes, fonts, colors                    |
-| `behavior.py`    | 40       | UX, Vim keybindings, per-host overrides  |
-| `performance.py` | 50       | Cache, rendering, DNS prefetch           |
-| `user.py`        | 90       | Personal overrides (driven by config.py) |
+| Layer            | Priority | Responsibility                                   |
+| ---------------- | -------- | ------------------------------------------------ |
+| `base.py`        | 10       | Foundational defaults, search engines, hints     |
+| `privacy.py`     | 20       | WebRTC, cookies, HTTPS, content blocking         |
+| `appearance.py`  | 30       | Theme, fonts, colors (18 built-in themes)        |
+| `behavior.py`    | 40       | UX, keybindings, quickmarks, per-host overrides  |
+| `context.py`     | 45       | Situational mode (work/research/media/dev) — NEW |
+| `performance.py` | 50       | Cache, DNS prefetch, rendering tuning            |
+| `user.py`        | 90       | Personal overrides, injected from config.py      |
 
----
+### `scripts/` (userscripts)
 
-## Configuration Guide
-
-Edit only the `CONFIGURATION SECTION` and `USER PREFERENCE SECTION` in `config.py`:
-
-```python
-# ── Theme (17 options) ────────────────────────────────────────────────────────
-THEME = "catppuccin-mocha"
-
-# ── Privacy profile ───────────────────────────────────────────────────────────
-PRIVACY_PROFILE = PrivacyProfile.STANDARD   # STANDARD | HARDENED | PARANOID
-
-# ── Performance profile ───────────────────────────────────────────────────────
-PERFORMANCE_PROFILE = PerformanceProfile.BALANCED  # BALANCED | HIGH | LOW | LAPTOP
-
-# ── Leader key ────────────────────────────────────────────────────────────────
-LEADER_KEY = ","
-
-# ── Per-host policy categories ────────────────────────────────────────────────
-HOST_POLICY_LOGIN  = True   # Google, GitHub, GitLab
-HOST_POLICY_SOCIAL = True   # Discord, Notion, Bilibili
-HOST_POLICY_MEDIA  = True   # YouTube, Twitch
-
-# ── Personal overrides ────────────────────────────────────────────────────────
-USER_EDITOR       = ["kitty", "-e", "nvim", "{}"]
-USER_START_PAGES  = ["https://www.bilibili.com"]
-USER_ZOOM         = None          # e.g. "110%"
-USER_SPELLCHECK   = None          # e.g. ["en-US"]
-USER_SEARCH_ENGINES = None        # replaces url.searchengines
-USER_EXTRA_SETTINGS = {}          # escape hatch for any qutebrowser setting
-USER_EXTRA_BINDINGS = [...]       # (key, command, mode) tuples
-USER_EXTRA_ALIASES  = {}          # {name: command}
-```
-
----
-
-## Themes
-
-### Built-in (5)
-
-`catppuccin-mocha` · `catppuccin-latte` · `gruvbox-dark` · `tokyo-night` · `rose-pine`
-
-### Extended (13)
-
-`nord` · `dracula` · `solarized-dark` · `solarized-light` · `one-dark` · `everforest-dark`
-`gruvbox-light` · `modus-vivendi` · `catppuccin-macchiato` · `catppuccin-frappe` · `kanagawa` · `palenight`
-`glass`
-
-| Theme   | Aesthetic                                                                                                                                                                                      |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `glass` | Modern · minimal · premium — deep cold substrate (`#0d0f14`), frosted-glass panel (`#161b26`), ice-blue accent (`#7ab8f5`), soft-violet secondary (`#9d8fe8`). Desaturated semantics. No neon. |
-
-Set `THEME = "glass"` in `config.py`. Add your own to `themes/extended.py`.
-
----
-
-## Privacy Profiles
-
-| Profile    | Description                                      | Breakage |
-| ---------- | ------------------------------------------------ | -------- |
-| `STANDARD` | Adblock, no 3rd-party cookies, WebRTC restricted | minimal  |
-| `HARDENED` | No cookies, no local storage, strict TLS         | moderate |
-| `PARANOID` | No JS, no images, Tor proxy, all cookies off     | severe   |
-
----
-
-## Key Bindings (selected)
-
-| Key       | Command                | Layer    |
-| --------- | ---------------------- | -------- |
-| `J` / `K` | prev / next tab        | behavior |
-| `H` / `L` | back / forward         | behavior |
-| `f` / `F` | hint / hint all tab    | behavior |
-| `,r`      | reload config          | behavior |
-| `,j`      | toggle JavaScript      | privacy  |
-| `,i`      | toggle images          | privacy  |
-| `,o`      | open with external app | user     |
-| `,m`      | open with mpv          | user     |
-| `,R`      | reader mode            | user     |
-| `gx`      | open clipboard URL     | user     |
-
-Full reference: run `python3 scripts/gen_keybindings.py` → `docs/KEYBINDINGS.md`
-
----
-
-## Userscripts
-
-| Script               | Binding | Description                         |
-| -------------------- | ------- | ----------------------------------- |
-| `open_with.py`       | `,o`    | Open URL with best external app     |
-| `readability.py`     | `,R`    | Reader mode                         |
-| `search_sel.py`      | `,/`    | Search selection in new tab         |
-| `password.py`        | `,p`    | pass integration                    |
-| `tab_restore.py`     | —       | Named session save/restore          |
-| `gen_keybindings.py` | —       | Auto-generate `docs/KEYBINDINGS.md` |
+| Script               | Key    | Purpose                             |
+| -------------------- | ------ | ----------------------------------- |
+| `open_with.py`       | `,o`   | Open URL with best external app     |
+| `readability.py`     | `,R`   | Reader mode                         |
+| `search_sel.py`      | `,/`   | Search selection in new tab         |
+| `password.py`        | `,p`   | pass integration                    |
+| `tab_restore.py`     | —      | Named session save/restore          |
+| `context_switch.py`  | `,Cw`… | Switch browsing context — NEW       |
+| `gen_keybindings.py` | —      | Auto-generate `docs/KEYBINDINGS.md` |
 
 ---
 
@@ -196,13 +148,13 @@ Full reference: run `python3 scripts/gen_keybindings.py` → `docs/KEYBINDINGS.m
 python3 tests/test_architecture.py   # 42 tests
 python3 tests/test_incremental.py    # 25 tests
 python3 tests/test_extensions.py     # 64 tests
-python3 tests/test_health.py         # 22 tests  (NEW v4)
-# Total: 153 tests, 0 failures
+python3 tests/test_health.py         # 46 tests  (v5: +24 from context + new checks)
+# Total: 177 tests, 0 failures
 
 # Syntax check
 python3 -m py_compile config.py orchestrator.py \
   core/*.py layers/*.py strategies/*.py policies/*.py themes/*.py \
-  keybindings/*.py scripts/gen_keybindings.py
+  keybindings/*.py scripts/gen_keybindings.py scripts/context_switch.py
 ```
 
 ---
@@ -222,26 +174,28 @@ qutebrowser-config/
 │   ├── layer.py            ← LayerProtocol + LayerStack
 │   ├── strategy.py         ← Strategy + Policy + PolicyChain
 │   ├── incremental.py      ← delta apply + snapshots
-│   └── health.py           ← HealthChecker  [NEW v4]
+│   └── health.py           ← HealthChecker (9 checks)
 │
 ├── layers/                 ← extend here
 │   ├── base.py  [p=10] · privacy.py [p=20] · appearance.py [p=30]
-│   ├── behavior.py [p=40] · performance.py [p=50] · user.py [p=90]
+│   ├── behavior.py [p=40] · context.py [p=45] · performance.py [p=50]
+│   └── user.py [p=90]
 │
 ├── strategies/  merge.py · profile.py · search.py · download.py
 ├── policies/    content.py · network.py · security.py · host.py
-├── themes/      extended.py  (13 extra themes)
+├── themes/      extended.py  (18 color schemes)
 ├── keybindings/ catalog.py   (query + conflict detection)
 │
 ├── scripts/
-│   ├── install.sh          ← deployment
-│   ├── gen_keybindings.py  ← auto-gen KEYBINDINGS.md  [NEW v4]
+│   ├── install.sh           ← deployment
+│   ├── gen_keybindings.py   ← auto-gen KEYBINDINGS.md
+│   ├── context_switch.py    ← runtime context switching  ← NEW
 │   ├── open_with.py · readability.py · password.py
 │   ├── search_sel.py · tab_restore.py
 │
 ├── tests/
 │   ├── test_architecture.py (42) · test_incremental.py (25)
-│   ├── test_extensions.py (64)  · test_health.py (22)
+│   ├── test_extensions.py (64)  · test_health.py (46)
 │
 └── docs/
     ├── ARCHITECTURE.md · EXTENDING.md · KEYBINDINGS.md
@@ -272,50 +226,39 @@ Register in `config.py`'s `_build_orchestrator()`.
 
 Add a `HostRule(…)` to the appropriate list in `policies/host.py`.
 
-### Add a Health Check
+### Add a Custom Context
 
-Subclass `HealthCheck` in `core/health.py`, then `.add(MyCheck())` to `HealthChecker.default()`.
+Add a `ContextSpec(…)` to `_CONTEXT_TABLE` in `layers/context.py`.
 
----
+### Switch Context at Runtime
 
-## Troubleshooting
+```
+,Cw  → work      ,Cr  → research
+,Cm  → media     ,Cd  → dev
+,C0  → default   ,Ci  → show current
+```
 
-**`Error while loading config.py`** → `python3 -m py_compile config.py`
-
-**Keybinding not working** → `python3 scripts/gen_keybindings.py --stdout` to inspect conflicts
-
-**Theme not found** → ensure `themes/extended.py` is deployed + `register_all_themes()` called
-
-**Health warnings in log** → informational only; config still applied. Review the flagged setting.
-
-**FSM `no transition` WARNING** → a lifecycle hook is sending an unexpected event; check `@lifecycle.decorator(…)` registrations.
+Or set in `config.py`: `ACTIVE_CONTEXT = "dev"`
 
 ---
 
-## Changelog
+## Key Configuration Variables (config.py)
 
-### v4 (current)
-
-- **New**: `core/health.py` — `HealthChecker` + 6 built-in checks integrated into `orchestrator.apply()`
-- **New**: `scripts/gen_keybindings.py` — auto-generates `docs/KEYBINDINGS.md`
-- **Fix**: `appearance.py` — `_font_settings()` now uses `ColorScheme.font_size_ui` (was hard-coded `"10pt"`)
-- **Fix**: `behavior.py` — removed invalid `downloads.open_dispatcher: None`
-- **Fix**: `privacy.py` — updated Chrome UA version (134→124)
-- **New themes**: `catppuccin-macchiato`, `catppuccin-frappe`, `kanagawa`, `palenight`, `glass` (18 total)
-  - `glass`: modern · minimal · premium frosted-glass aesthetic; deep cold substrate + ice-blue accent
-- **New bindings**: prompt mode, hint escape, window management (`,n`, `,N`)
-- **New engines**: `npm`, `dh` (Docker Hub), `tf` (Terraform) in dev search set
-- **22 new tests** (total: **153**)
-
-### v3
-
-- `strategies/` — merge, profile, search, download
-- `policies/` — content, network, security, host
-- 8 extended themes · keybinding catalog · 3 userscripts
-- 64 new tests (total: 131)
-
-### v2
-
-- FSM spurious `APPLY_START` WARNING fixed
-- `PrivacyLayer` leader-key parameterisation
-- `ValidateStage` fixed to inspect nested `packet.data["settings"]`
+| Variable                    | Type                 | Purpose                                       |
+| --------------------------- | -------------------- | --------------------------------------------- |
+| `THEME`                     | `str`                | Active color scheme                           |
+| `PRIVACY_PROFILE`           | `PrivacyProfile`     | STANDARD / HARDENED / PARANOID                |
+| `PERFORMANCE_PROFILE`       | `PerformanceProfile` | BALANCED / HIGH / LOW / LAPTOP                |
+| `LEADER_KEY`                | `str`                | Multi-key binding prefix (default `,`)        |
+| `ACTIVE_CONTEXT`            | `str \| None`        | Situational context (work/research/media/dev) |
+| `LAYERS`                    | `dict[str, bool]`    | Enable/disable individual layers              |
+| `USER_EDITOR`               | `list[str] \| None`  | Editor command for :open-editor               |
+| `USER_START_PAGES`          | `list[str] \| None`  | Browser start pages                           |
+| `USER_ZOOM`                 | `str \| None`        | Default zoom level                            |
+| `USER_GITHUB`               | `str`                | GitHub username for `:gh` alias               |
+| `USER_SEARCH_ENGINES`       | `dict \| None`       | Additional/override search engines            |
+| `USER_SEARCH_ENGINES_MERGE` | `bool`               | True=merge on top, False=replace entirely     |
+| `USER_SPELLCHECK`           | `list[str] \| None`  | Spellcheck language codes                     |
+| `USER_EXTRA_SETTINGS`       | `dict[str, Any]`     | Escape hatch — any qutebrowser setting        |
+| `USER_EXTRA_BINDINGS`       | `list[tuple]`        | Escape hatch — additional keybindings         |
+| `USER_EXTRA_ALIASES`        | `dict[str, str]`     | Escape hatch — command aliases                |

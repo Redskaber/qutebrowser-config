@@ -1,7 +1,7 @@
 """
 config.py
 =========
-qutebrowser Configuration Entry Point
+qutebrowser Configuration Entry Point  (v5)
 
 This is the **only** file qutebrowser loads directly.
 It is intentionally thin: it wires the architecture and delegates
@@ -16,6 +16,14 @@ all real work to the ConfigOrchestrator.
 Compatible: qutebrowser ≥ 3.0  ·  PyQt6  ·  Python ≥ 3.11
 NixOS:      paths resolve via the nix store automatically.
 
+Architecture wiring order:
+  1. LayerStack built with enabled layers (priority-sorted)
+  2. ContextLayer injected if ACTIVE_CONTEXT is set
+  3. UserLayer injected last (priority=90)
+  4. ConfigOrchestrator.build() → resolves layers, runs pipeline
+  5. ConfigOrchestrator.apply() → writes to qutebrowser config API
+  6. apply_host_policies()      → pattern-scoped config.set()
+
 Strict-mode notes (Pyright):
   - _apply(config, c) parameters annotated as Any — qutebrowser injects
     these at runtime; no stub types are available.
@@ -29,7 +37,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Any
+from typing import Any, Optional
 
 # ── Make all sub-packages importable ──────────────────────────────────────────
 _config_dir = os.path.dirname(os.path.abspath(__file__))
@@ -57,6 +65,13 @@ from layers.user        import UserLayer
 
 from orchestrator import ConfigApplier, ConfigOrchestrator
 
+# ── Optional: ContextLayer (graceful fallback if context.py absent) ──────────
+try:
+    from layers.context import ContextLayer, ContextMode
+    _CONTEXT_LAYER_AVAILABLE = True
+except ImportError:
+    _CONTEXT_LAYER_AVAILABLE = False
+
 # ── Extended themes (optional; graceful fallback if themes/ absent) ───────────
 try:
     from themes.extended import register_all_themes
@@ -66,7 +81,7 @@ except ImportError:
 
 # ── Host policy registry (optional; graceful fallback) ────────────────────────
 try:
-    from policies.host import build_default_host_registry as _build_host_registry
+    from policies.host import HostPolicyRegistry, build_default_host_registry as _build_host_registry
     _HOST_REGISTRY_AVAILABLE = True
 except ImportError:
     _HOST_REGISTRY_AVAILABLE = False
@@ -89,7 +104,7 @@ logger = logging.getLogger("qute.config")
 # ── Theme ─────────────────────────────────────────────────────────────────────
 # Built-in (5):
 #   catppuccin-mocha | catppuccin-latte | gruvbox-dark | tokyo-night | rose-pine
-# Extended (13):
+# Extended (13+):
 #   nord | dracula | solarized-dark | solarized-light | one-dark
 #   everforest-dark | gruvbox-light | modus-vivendi
 #   catppuccin-macchiato | catppuccin-frappe | kanagawa | palenight
@@ -114,6 +129,16 @@ PERFORMANCE_PROFILE = PerformanceProfile.BALANCED
 # Prefix for multi-key bindings.  Change once here; all layers follow.
 LEADER_KEY = ","
 
+# ── Active Context ────────────────────────────────────────────────────────────
+# Situational browser mode.  Injects context-specific search engines,
+# keybindings, and behavioral overrides.  None = auto-detect from
+# QUTE_CONTEXT environment variable, or default if not set.
+#
+# Valid values: None | "default" | "work" | "research" | "media" | "dev"
+#
+# Switch at runtime:  ,Cw (work)  ,Cr (research)  ,Cm (media)  ,Cd (dev)  ,C0 (reset)
+ACTIVE_CONTEXT: Optional[str] = None
+
 # ── Layer enable / disable ────────────────────────────────────────────────────
 # False = skip layer entirely.  Useful for debugging.
 LAYERS: dict[str, bool] = {
@@ -121,6 +146,7 @@ LAYERS: dict[str, bool] = {
     "privacy":     True,
     "appearance":  True,
     "behavior":    True,
+    "context":     True,   # situational context layer (priority=45)
     "performance": True,
     "user":        True,
 }
@@ -156,8 +182,13 @@ USER_ZOOM: str | None = None
 # e.g. ["en-US"], ["en-US", "zh-CN"].  None = keep base default.
 USER_SPELLCHECK: list[str] | None = None
 
+# ── GitHub username (used in :gh alias) ───────────────────────────────────────
+USER_GITHUB: str = "redskaber"
+
 # ── Search engine overrides ───────────────────────────────────────────────────
-# Merged on top of the base layer's engine dict (UserLayer wins at priority=90).
+# Merged ON TOP of the base layer's engine dict (UserLayer priority=90).
+# Set USER_SEARCH_ENGINES_MERGE=True (default) for additive behavior.
+# Set to False to REPLACE the entire engine map.
 # None = keep base engines unchanged.
 #
 # Example — add Jira:
@@ -165,6 +196,7 @@ USER_SPELLCHECK: list[str] | None = None
 #       "jira": "https://jira.mycompany.com/issues/?jql=text+~+{}",
 #   }
 USER_SEARCH_ENGINES: dict[str, str] | None = None
+USER_SEARCH_ENGINES_MERGE: bool = True
 
 # ── Extra settings (escape hatch) ─────────────────────────────────────────────
 # Any qutebrowser setting not covered by the named layers.
@@ -203,14 +235,17 @@ USER_EXTRA_BINDINGS: list[tuple[str, str, str]] = [
     # (f"{L}Sl", "spawn --userscript tab_restore.py --list",            "normal"),
 
     # ── Pass password manager (uncomment to enable) ───────────────────────
-    # (f"{L}p",  "spawn --userscript password.py",                      "normal"),
-    # (f"{L}P",  "spawn --userscript password.py --otp",                "normal"),
+    # (f"{L}pp", "spawn --userscript password.py",                      "normal"),
+    # (f"{L}pP", "spawn --userscript password.py --otp",                "normal"),
 ]
 
 # ── Extra aliases (escape hatch) ──────────────────────────────────────────────
 USER_EXTRA_ALIASES: dict[str, str] = {
     "rl":    "config-source",
     "clean": "download-clear",
+    "his":   "history",
+    "bm":    "bookmark-list",
+    "qm":    "quickmark-list",
 }
 
 
@@ -229,7 +264,7 @@ def _build_orchestrator() -> ConfigOrchestrator:
     fsm       = ConfigStateMachine()
 
     # ── Host Policy Registry ──────────────────────────────────────────
-    host_registry = None
+    host_registry: Optional[HostPolicyRegistry] = None
     if _HOST_REGISTRY_AVAILABLE:
         host_registry = _build_host_registry(
             include_login  = HOST_POLICY_LOGIN,
@@ -252,20 +287,30 @@ def _build_orchestrator() -> ConfigOrchestrator:
     if LAYERS.get("behavior"):
         stack.register(BehaviorLayer(leader=LEADER_KEY))
 
+    if LAYERS.get("context") and _CONTEXT_LAYER_AVAILABLE:
+        # Resolve base engines from what's been registered so far
+        # (ContextLayer merges its engine delta on top at priority=45)
+        stack.register(ContextLayer(
+            context = ACTIVE_CONTEXT,
+            leader  = LEADER_KEY,
+        ))
+
     if LAYERS.get("performance"):
         stack.register(PerformanceLayer(profile=PERFORMANCE_PROFILE))
 
     if LAYERS.get("user"):
         stack.register(UserLayer(
-            leader           = LEADER_KEY,
-            editor           = USER_EDITOR,
-            start_pages      = USER_START_PAGES,
-            zoom             = USER_ZOOM,
-            search_engines   = USER_SEARCH_ENGINES,
-            spellcheck_langs = USER_SPELLCHECK,
-            extra_settings   = USER_EXTRA_SETTINGS or {},
-            extra_bindings   = USER_EXTRA_BINDINGS or [],
-            extra_aliases    = USER_EXTRA_ALIASES  or {},
+            leader                = LEADER_KEY,
+            editor                = USER_EDITOR,
+            start_pages           = USER_START_PAGES,
+            zoom                  = USER_ZOOM,
+            search_engines        = USER_SEARCH_ENGINES,
+            search_engines_merge  = USER_SEARCH_ENGINES_MERGE,
+            spellcheck_langs      = USER_SPELLCHECK,
+            extra_settings        = USER_EXTRA_SETTINGS or {},
+            extra_bindings        = USER_EXTRA_BINDINGS or [],
+            extra_aliases         = USER_EXTRA_ALIASES  or {},
+            github_username       = USER_GITHUB,
         ))
 
     # ── Lifecycle hooks ───────────────────────────────────────────────
@@ -281,16 +326,22 @@ def _build_orchestrator() -> ConfigOrchestrator:
 
     # ── Event observers ───────────────────────────────────────────────
     def _on_layer_applied(e: Event) -> None:
-        evt = e if isinstance(e, LayerAppliedEvent) else LayerAppliedEvent()
-        logger.info("layer applied: %-12s (%d settings)", evt.layer_name, evt.key_count)
+        if isinstance(e, LayerAppliedEvent):
+            logger.info(
+                "layer applied: %-12s (%d settings)",
+                e.layer_name, e.key_count,
+            )
 
     def _on_config_error(e: Event) -> None:
-        evt = e if isinstance(e, ConfigErrorEvent) else ConfigErrorEvent()
-        logger.error("config error [%s]: %s", evt.layer_name or "?", evt.error_msg)
+        if isinstance(e, ConfigErrorEvent):
+            logger.error(
+                "config error [%s]: %s",
+                e.layer_name or "?", e.error_msg,
+            )
 
     def _on_theme_changed(e: Event) -> None:
-        evt = e if isinstance(e, ThemeChangedEvent) else ThemeChangedEvent()
-        logger.info("theme changed: %s", evt.theme_name)
+        if isinstance(e, ThemeChangedEvent):
+            logger.info("theme changed: %s", e.theme_name)
 
     router.events.subscribe(LayerAppliedEvent, _on_layer_applied)
     router.events.subscribe(ConfigErrorEvent,  _on_config_error)
@@ -347,5 +398,3 @@ try:
     _apply(config, c)              # type: ignore[name-defined]
 except NameError:
     logger.info("[config.py] running outside qutebrowser — skipping _apply()")
-
-

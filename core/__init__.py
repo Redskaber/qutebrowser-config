@@ -1,10 +1,14 @@
 """
 core/__init__.py
 ================
-Public API surface for the ``core`` architecture package.
+Public API surface for the ``core`` architecture package.  v5
 
 Import from here for stable, versioned access to core types.
 Internal implementation details live in the individual modules.
+
+v5 additions:
+  - ContextSwitchedEvent, HealthReportReadyEvent
+  - GetMergedConfigQuery, GetHealthReportQuery
 """
 
 from core.incremental import (
@@ -45,6 +49,11 @@ from core.protocol import (
     LayerAppliedEvent,
     ConfigErrorEvent,
     ThemeChangedEvent,
+    BindingRegisteredEvent,
+    ContextSwitchedEvent,
+    HealthReportReadyEvent,
+    GetMergedConfigQuery,
+    GetHealthReportQuery,
 )
 from core.state import (
     ConfigEvent,
@@ -82,10 +91,13 @@ __all__ = [
     # pipeline
     "ConfigPacket", "LogStage", "MergeStage", "Pipeline",
     "PipeStage", "TransformStage", "ValidateStage", "ConditionalStage",
-    # protocol
+    # protocol — events
     "CommandBus", "EventBus", "MessageRouter", "QueryBus",
     "Event", "Command", "Query",
     "LayerAppliedEvent", "ConfigErrorEvent", "ThemeChangedEvent",
+    "BindingRegisteredEvent", "ContextSwitchedEvent", "HealthReportReadyEvent",
+    # protocol — queries
+    "GetMergedConfigQuery", "GetHealthReportQuery",
     # state
     "ConfigEvent", "ConfigState", "ConfigStateMachine",
     # strategy

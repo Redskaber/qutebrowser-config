@@ -1,441 +1,224 @@
-# Architecture Deep-Dive
+# Architecture Reference
 
-> For the quick-start and high-level overview, see [README.md](../README.md).
-> This document targets contributors and layer authors.
-
----
-
-## Table of Contents
-
-1. [Design Philosophy](#design-philosophy)
-2. [Module Map](#module-map)
-3. [Layer System](#layer-system)
-4. [Pipeline System](#pipeline-system)
-5. [State Machine](#state-machine)
-6. [Message Protocol](#message-protocol)
-7. [Strategy & Policy System](#strategy--policy-system)
-8. [Incremental Apply](#incremental-apply)
-9. [Data Flow (annotated)](#data-flow-annotated)
-10. [Dependency Graph](#dependency-graph)
-11. [Extension Points](#extension-points)
-12. [Testing Strategy](#testing-strategy)
+> qutebrowser-config v5 — principled, layered, extensible
 
 ---
 
-## Design Philosophy
+## Layer Priority Map
 
-This config is built like a compiler front-end:
+```
+Priority  Layer           Responsibility
+────────────────────────────────────────────────────────────
+  10      BaseLayer       Foundational defaults (search engines, hints,
+                          tabs, statusbar, session, zoom, aliases)
+  20      PrivacyLayer    WebRTC, fingerprinting, cookies, HTTPS,
+                          content blocking (STANDARD/HARDENED/PARANOID)
+  30      AppearanceLayer Theme rendering: ColorScheme → qutebrowser keys
+                          18 built-in themes; font, color, hint overrides
+  40      BehaviorLayer   UX keybindings (Vim-style), per-host rules,
+                          quickmarks, hints, download, caret mode
+  45      ContextLayer    Situational mode: work / research / media / dev
+          [NEW v5]        Search engine delta + settings delta per mode
+  50      PerformanceLayer Cache tuning, DNS prefetch, rendering (4 profiles)
+  90      UserLayer       Personal overrides injected from config.py
+                          (editor, start_pages, zoom, search, bindings, aliases)
+────────────────────────────────────────────────────────────
+```
 
-| Compiler Stage    | Config Equivalent              |
-| ----------------- | ------------------------------ |
-| Source files      | Layer `_settings()` methods    |
-| Parse + validate  | `validate()` + `ValidateStage` |
-| IR / AST          | `ConfigPacket`                 |
-| Optimization pass | `PipeStage` chain              |
-| Code generation   | `ConfigApplier.apply_*()`      |
-| Linker            | `LayerStack.resolve()`         |
-| Runtime           | qutebrowser's config API       |
-
-The result: config is **data** flowing through **transforms**, not imperative
-Python statements scattered across a file.
-
-### Core Principles
-
-**Dependency Inversion** — every module depends on an abstraction, not a
-concrete. `LayerStack` depends on `LayerProtocol`, not `BaseLayer`.
-`ConfigOrchestrator` depends on `LifecycleManager`, not specific hooks.
-
-**Single Source of Truth** — state transitions live in `state.py::TRANSITIONS`.
-Theme colors live in `ColorScheme` dataclasses. Host rules live in
-`policies/host.py`. Nothing is duplicated.
-
-**Open/Closed** — adding a layer, strategy, policy, or pipeline stage never
-modifies existing code. Registration is the extension mechanism.
-
-**Pure Build** — `layer.build()` and `layer.validate()` are pure functions.
-No side effects. This makes them testable without a running browser.
-
-**Explicit State** — the FSM (`ConfigStateMachine`) owns all lifecycle state.
-No flags scattered across objects. Every transition is declared in a table.
+Higher priority overwrites lower for the same key (except keybindings,
+which accumulate across all layers).
 
 ---
 
-## Module Map
-
-```
-config.py                     ← entry point (single file qutebrowser loads)
-orchestrator.py               ← composition root; wires everything
-
-core/
-  layer.py       LayerProtocol, BaseConfigLayer, LayerStack, LayerRecord
-  pipeline.py    PipeStage, Pipeline, ConfigPacket, LogStage, ValidateStage
-  state.py       ConfigState, ConfigEvent, ConfigStateMachine
-  lifecycle.py   LifecycleHook, LifecycleManager, LifecyclePhase
-  protocol.py    MessageRouter, EventBus, CommandBus, QueryBus
-                 Event, LayerAppliedEvent, ConfigErrorEvent, ThemeChangedEvent
-  strategy.py    Strategy, StrategyRegistry, Policy, PolicyChain, PolicyDecision
-                 ReadOnlyPolicy, TypeEnforcePolicy, RangePolicy, AllowlistPolicy
-                 MergeStrategy.*
-  incremental.py SnapshotStore, IncrementalApplier
-
-layers/
-  base.py        BaseLayer           [priority=10]
-  privacy.py     PrivacyLayer        [priority=20]   PrivacyProfile
-  appearance.py  AppearanceLayer     [priority=30]   ColorScheme, THEMES
-  behavior.py    BehaviorLayer       [priority=40]   HostPolicy
-  performance.py PerformanceLayer    [priority=50]   PerformanceProfile
-  user.py        UserLayer           [priority=90]
-
-strategies/
-  merge.py       LastWins, FirstWins, DeepMerge, ProfileAware
-  profile.py     UnifiedProfile, ProfileStrategy, ProfileResolution
-  search.py      BaseSearch, DevSearch, PrivacySearch, ChineseSearch, …
-  download.py    NoDispatcher, XdgOpen, Rifle, AutoDetect
-
-policies/
-  content.py     JS, Cookie, Autoplay, Canvas, LocalStorage, WebRTC policies
-  network.py     DnsPrefetch, Referrer, Proxy, HttpsOnly policies
-  security.py    Geolocation, MediaCapture, Notification, Clipboard, MixedContent
-  host.py        HostRule, HostPolicyRegistry, built-in rule sets
-
-themes/
-  extended.py    nord, dracula, solarized-*, one-dark, everforest-dark, …
-
-keybindings/
-  catalog.py     KeybindingCatalog, KeybindingEntry (query + conflict detection)
-
-scripts/
-  install.sh     deployment script
-  readability.py userscript: reader mode
-  password.py    userscript: pass integration
-
-tests/
-  test_architecture.py  67 unit tests covering all core modules
-  test_incremental.py   incremental apply + snapshot tests
-```
-
----
-
-## Layer System
-
-```
-LayerProtocol (ABC)
-  ├── name: str
-  ├── priority: int
-  ├── description: str
-  ├── build() → ConfigDict          [pure, required]
-  ├── validate(data) → List[str]   [pure, optional]
-  └── pipeline() → Optional[Pipeline]
-
-BaseConfigLayer (implements LayerProtocol)
-  ├── build() → calls _settings(), _keybindings(), _aliases()
-  │             assembles ConfigDict{"settings":{}, "keybindings":[], "aliases":{}}
-  ├── validate(data) → checks required keys present
-  ├── _settings() → ConfigDict     [override in subclass]
-  ├── _keybindings() → List[Tuple] [override in subclass]
-  └── _aliases() → ConfigDict      [override in subclass]
-
-LayerStack
-  ├── register(layer) → ordered by priority
-  ├── resolve() → Dict[name, ConfigPacket]  (runs pipeline per layer)
-  └── merged → ConfigDict  (deep merge result, highest priority wins)
-```
-
-### Layer Priority Contract
-
-| Priority | Layer       | Can override       |
-| -------- | ----------- | ------------------ |
-| 10       | base        | nothing            |
-| 20       | privacy     | base               |
-| 30       | appearance  | base, privacy      |
-| 40       | behavior    | base .. appearance |
-| 50       | performance | base .. behavior   |
-| 90       | user        | everything         |
-
-There is intentional space between 50 and 90 for user-added layers (60–80).
-
----
-
-## Pipeline System
-
-```
-ConfigPacket
-  data:   ConfigDict     ← current settings dict
-  errors: List[str]      ← accumulated error strings
-  meta:   Dict[str,Any]  ← arbitrary metadata for stages
-
-PipeStage (ABC)
-  name: str
-  process(packet) → ConfigPacket    ← pure transform
-
-Pipeline
-  stages: List[PipeStage]
-  run(packet) → ConfigPacket        ← fold: reduce over stages
-
-Built-in stages:
-  LogStage         → debug-logs packet contents; pass-through
-  ValidateStage    → runs predicate(packet.data) → str; appends to errors
-```
-
-Custom stages plug in via `layer.pipeline()`:
-
-```python
-def pipeline(self) -> Pipeline:
-    return Pipeline([LogStage(), MyCustomStage()])
-```
-
----
-
-## State Machine
-
-```
-States:  IDLE → LOADING → VALIDATING → APPLYING → ACTIVE
-                  ↘           ↘           ↘
-                 ERROR       ERROR       ERROR
-                   ↓
-               RELOADING ──────────────────────┘
-
-Events:
-  START_LOAD    IDLE      → LOADING
-  LOAD_DONE     LOADING   → VALIDATING
-  LOAD_FAILED   LOADING   → ERROR
-  VALIDATE_DONE VALIDATING→ APPLYING
-  VALIDATE_FAIL VALIDATING→ ERROR
-  APPLY_DONE    APPLYING  → ACTIVE
-  APPLY_FAIL    APPLYING  → ERROR
-  RELOAD        ACTIVE    → RELOADING
-  RELOAD        ERROR     → RELOADING
-  LOAD_DONE     RELOADING → VALIDATING
-  RESET         *         → IDLE
-```
-
-The FSM is the single source of truth for "where are we in loading?".
-Observer callbacks fire on every transition.
-
----
-
-## Message Protocol
-
-Three buses, zero coupling:
-
-**EventBus** — pub/sub broadcast. `emit(event)` notifies all subscribers
-of that event type. Subscribers registered with `subscribe(EventType, fn)`.
-
-**CommandBus** — CQRS commands. Exactly one handler per command type.
-Fire-and-forget with no return value.
-
-**QueryBus** — CQRS queries. Exactly one handler per query type.
-Returns a value. Used for: "what is the current theme?", "is JS enabled?".
-
-`MessageRouter` owns all three buses and is the single injection point.
-
----
-
-## Strategy & Policy System
-
-**Strategy** — selects and applies an algorithm:
-
-```
-StrategyRegistry.apply(name, context) → T
-```
-
-Used for: merge algorithm selection, search engine set, download dispatcher.
-
-**Policy** — gates or transforms a single key/value:
-
-```
-PolicyChain.evaluate(key, value, context) → PolicyDecision
-PolicyDecision.action: ALLOW | DENY | MODIFY | WARN
-```
-
-Used for: enforcing privacy profile constraints, security hard limits.
-
-Policy chains run _after_ LayerStack.resolve() and _before_ ConfigApplier.apply_settings().
-This means even a UserLayer (priority=90) override can be blocked by a PARANOID policy.
-
----
-
-## Incremental Apply
-
-Hot-reload (`:config-source`) re-runs `config.py` from scratch.
-The `IncrementalApplier` + `SnapshotStore` reduce the cost:
-
-```
-SnapshotStore.record(settings, label)  ← stores snapshot
-IncrementalApplier.compute_delta()     ← diff current vs previous
-IncrementalApplier.apply_delta(delta)  ← call config.set() only for changed keys
-```
-
-If no snapshot exists (first load), all keys are applied.
-On reload, only changed keys are re-set — unchanged settings are skipped.
-
----
-
-## Data Flow (annotated)
-
-```
-qutebrowser forks Python → loads config.py
-    │
-    ├─ sys.path.insert(0, config_dir)  ← makes core/, layers/ importable
-    │
-    └─ _build_orchestrator()
-           ├─ MessageRouter()
-           ├─ LifecycleManager()
-           ├─ ConfigStateMachine()
-           └─ LayerStack()
-                 ├─ register(BaseLayer())           [p=10]
-                 ├─ register(PrivacyLayer())         [p=20]
-                 ├─ register(AppearanceLayer())      [p=30]
-                 ├─ register(BehaviorLayer())        [p=40]
-                 ├─ register(PerformanceLayer())     [p=50]
-                 └─ register(UserLayer())            [p=90]
-
-orchestrator.build()
-    ├─ fsm.send(START_LOAD) → IDLE→LOADING
-    ├─ lifecycle.run(PRE_INIT)
-    ├─ LayerStack.resolve()
-    │     for layer in sorted(priority):
-    │       raw   = layer.build()           ← pure Python dict
-    │       errs  = layer.validate(raw)     ← pure: [] or ["err"]
-    │       pkt   = ConfigPacket(raw, errs)
-    │       pkt   = layer.pipeline().run(pkt)  if pipeline
-    │       merged = deep_merge(merged, pkt.data)
-    ├─ fsm.send(LOAD_DONE) → LOADING→VALIDATING
-    ├─ fsm.send(VALIDATE_DONE) → VALIDATING→APPLYING
-    └─ lifecycle.run(POST_INIT)
-
-orchestrator.apply(applier)
-    ├─ lifecycle.run(PRE_APPLY)
-    ├─ applier.apply_settings(merged["settings"])
-    │     for k, v in settings.items():
-    │       # policy chain evaluation (if configured)
-    │       config.set(k, v)
-    ├─ applier.apply_keybindings(merged["keybindings"])
-    │     for key, cmd, mode in bindings:
-    │       config.bind(key, cmd, mode=mode)
-    ├─ applier.apply_aliases(merged["aliases"])
-    │     for name, cmd in aliases.items():
-    │       c.aliases[name] = cmd
-    ├─ router.emit(LayerAppliedEvent(layer_name, key_count))
-    ├─ fsm.send(APPLY_DONE) → APPLYING→ACTIVE
-    └─ lifecycle.run(POST_APPLY)
-
-orchestrator.apply_host_policies(applier)
-    └─ BehaviorLayer.host_policies()
-          for policy in policies:
-            for k, v in policy.settings.items():
-              config.set(k, v, pattern=policy.pattern)
-```
-
----
-
-## Dependency Graph
+## Data Flow
 
 ```
 config.py
-  → orchestrator
-      → core/layer  → core/pipeline
-      → core/state
-      → core/lifecycle
-      → core/protocol
-      → core/strategy
-      → core/incremental
-      → layers/* → core/layer (BaseConfigLayer)
-      → strategies/* → core/strategy, layers/privacy, layers/performance
-      → policies/* → core/strategy, layers/privacy
-      → themes/* → layers/appearance (ColorScheme, THEMES)
-      → keybindings/* [optional, for docs/tests only]
-```
-
-**Invariant**: `layers/*` never imports from `layers/*`.
-**Invariant**: `core/*` never imports from `layers/*` or `strategies/*`.
-Violations of these invariants are bugs.
-
----
-
-## Extension Points
-
-| What to add             | Where                        | Register in                     |
-| ----------------------- | ---------------------------- | ------------------------------- |
-| New configuration layer | `layers/myfeature.py`        | `config.py`                     |
-| New theme               | `themes/extended.py`         | auto via import                 |
-| New merge algorithm     | `strategies/merge.py`        | `build_merge_registry()`        |
-| New search engine set   | `strategies/search.py`       | `build_search_registry()`       |
-| New privacy policy rule | `policies/content.py`        | `build_content_policy_chain()`  |
-| New host exception      | `policies/host.py`           | `build_default_host_registry()` |
-| New pipeline stage      | `core/pipeline.py` or inline | `layer.pipeline()`              |
-| New lifecycle hook      | `config.py` wiring section   | `@lifecycle.on(phase)`          |
-| New FSM event           | `core/state.py` TRANSITIONS  | declare + send()                |
-
----
-
-## Testing Strategy
-
-Tests are **pure Python** — no qutebrowser process required.
-All layer `build()` methods are tested in isolation.
-
-```
-tests/
-  test_architecture.py   67 tests
-    ├── TestPipeline         pipeline fold, LogStage, ValidateStage
-    ├── TestStateMachine     transitions, invalid transitions, observers
-    ├── TestMessageRouter    EventBus, CommandBus, QueryBus
-    ├── TestLifecycle        hook ordering, error isolation
-    ├── TestLayerStack       priority order, merge semantics
-    ├── TestBaseLayer        build, validate, keybindings
-    ├── TestAppearanceLayer  all themes, color key presence
-    ├── TestPrivacyLayer     all profiles, cookie/JS gating
-    ├── TestFullStack        end-to-end resolve + merge
-    └── TestStrategy         PolicyChain decisions
-
-  test_incremental.py    25 tests
-    ├── SnapshotStore        record, retrieve, max_history
-    ├── IncrementalApplier   delta compute, apply, error handling
-    └── integration          full load→record→reload→delta cycle
-```
-
-Run all tests:
-
-```bash
-pytest tests/ -v
-# or
-python3 tests/test_architecture.py && python3 tests/test_incremental.py
+  │  reads: THEME, PRIVACY_PROFILE, PERFORMANCE_PROFILE, ACTIVE_CONTEXT, USER_*
+  │
+  ▼
+_build_orchestrator()
+  │
+  ├─ LayerStack.register(layer)  ← 7 layers sorted by priority
+  │
+  ▼
+ConfigOrchestrator.build()
+  │
+  ├─ FSM: IDLE → LOADING
+  ├─ LifecycleManager.run(PRE_INIT)
+  ├─ LayerStack.resolve()
+  │     for each layer (priority order):
+  │       1. layer.build()          → ConfigDict (pure, no side effects)
+  │       2. layer.validate(data)   → List[str] errors
+  │       3. ConfigPacket(data)     → data unit
+  │       4. layer.pipeline().run() → optional post-process
+  │       5. _deep_merge(accumulated, packet.data)
+  │
+  ├─ FSM: LOADING → VALIDATING → APPLYING
+  ├─ LifecycleManager.run(POST_INIT)
+  │
+  ▼
+ConfigOrchestrator.apply(applier)
+  │
+  ├─ LifecycleManager.run(PRE_APPLY)
+  ├─ PolicyChain.evaluate(key, value) per setting → ALLOW/MODIFY/DENY/WARN
+  ├─ ConfigApplier.apply_settings(merged_settings)
+  │     config.set(key, value)  for each key
+  ├─ ConfigApplier.apply_keybindings(all_bindings)
+  │     config.bind(key, cmd, mode=mode)
+  ├─ ConfigApplier.apply_aliases(aliases)
+  │     c.aliases[alias] = cmd
+  ├─ MessageRouter.emit(LayerAppliedEvent) per layer
+  ├─ HealthChecker.default().check(settings)  ← 9 checks
+  ├─ FSM: APPLYING → ACTIVE
+  ├─ LifecycleManager.run(POST_APPLY)
+  │
+  ▼
+ConfigOrchestrator.apply_host_policies(applier)
+  │
+  ├─ HostPolicyRegistry.active() → per-pattern rules
+  │     config.set(key, value, pattern=...)
+  └─ BehaviorLayer.host_policies() → legacy rules
 ```
 
 ---
 
-## Health Check System (v4)
+## Merge Semantics
+
+The `LayerStack._deep_merge()` function controls how layers combine:
+
+| Value Type | Key Context           | Merge Rule                |
+| ---------- | --------------------- | ------------------------- |
+| `dict`     | any                   | recursive deep-merge      |
+| `list`     | `"keybindings"` (top) | **accumulate** (extend)   |
+| `list`     | anything else         | **replace** (higher wins) |
+| scalar     | any                   | **replace** (higher wins) |
+
+**Keybindings accumulate** because every layer contributes its own subset;
+qutebrowser merges them on top of its built-in defaults.
+
+**Settings replace** because they are point values; the highest-priority
+layer's value wins outright.
+
+**Search engines** (`url.searchengines`) are a `dict` inside `settings`,
+so they deep-merge by key. This means ContextLayer and UserLayer can add
+_individual_ engine entries without replacing the whole map.
+
+---
+
+## State Machine (ConfigStateMachine)
 
 ```
-HealthChecker
-  ├── BlockingEnabledCheck   — ERROR if content.blocking.enabled is False
-  ├── JavaScriptClipboardCheck — WARN if js.clipboard allows write
-  ├── SearchEngineDefaultCheck — ERROR if url.searchengines lacks DEFAULT
-  ├── WebRTCPolicyCheck      — WARN if WebRTC can leak local IP
-  ├── CookieAcceptCheck      — INFO if cookies.accept == "all" globally
-  └── StartPageCheck         — WARN if url.start_pages is empty
+        START_LOAD      LOAD_DONE       VALIDATE_DONE    APPLY_DONE
+IDLE ──────────→ LOADING ──────────→ VALIDATING ──────────→ APPLYING ──────────→ ACTIVE
+ │                  │                    │                    │
+ │                  └─ LOAD_FAILED ──→ ERROR               APPLY_FAIL ──→ ERROR
+ │                                                            │
+ └───────────────────── RELOAD ──────────────────────────────┘
 ```
 
-The checker runs _after_ `apply_settings()` in `orchestrator.apply()`.
-It does **not** block config application — it only logs.
-Custom checks implement `HealthCheck.run(settings, report)`.
+Transitions are a data-driven table in `core/state.py`.
+Each transition fires `on_transition` observers (used by orchestrator for logging).
 
-### Adding a check
+---
+
+## Communication Protocol (MessageRouter)
+
+Three buses, one router — no direct cross-module imports:
+
+```
+EventBus   — fire-and-forget; zero or many subscribers
+  LayerAppliedEvent(layer_name, key_count)
+  ConfigErrorEvent(error_msg, layer_name)
+  ThemeChangedEvent(theme_name)
+  BindingRegisteredEvent(key, command, mode)
+
+CommandBus — imperative; exactly one handler; may fail
+  ApplyLayerCommand(layer_name, priority)
+  ReloadConfigCommand(reason)
+  SetOptionCommand(key, value)
+
+QueryBus   — request/response; exactly one handler; returns value
+  GetMergedConfigQuery()
+  GetLayerQuery(name)
+  GetHealthReportQuery()
+```
+
+---
+
+## Context Layer (NEW v5)
+
+`ContextLayer` [priority=45] resolves a named situational context into:
+
+1. A **search engine delta** merged on top of base engines
+2. A **settings delta** applied as overrides
+3. **Context-switching keybindings** (always registered, regardless of context)
+
+### Context Resolution Priority
+
+```
+1. ACTIVE_CONTEXT param (from config.py)      ← highest
+2. QUTE_CONTEXT environment variable
+3. ~/.config/qutebrowser/.context file (written by context_switch.py)
+4. ContextMode.DEFAULT                        ← fallback
+```
+
+### Runtime Switching
+
+`context_switch.py` (userscript):
+
+1. Writes requested context to `~/.config/qutebrowser/.context`
+2. Sends `:config-source` to reload
+3. On next load, `ContextLayer._resolve_active_mode()` reads the file
+
+---
+
+## Health Check System
+
+`HealthChecker.default()` runs 9 checks after `apply()`:
+
+| Check Class              | Key Checked                          | Auto-fix? |
+| ------------------------ | ------------------------------------ | --------- |
+| BlockingEnabledCheck     | `content.blocking.enabled`           | No        |
+| SearchEngineDefaultCheck | `url.searchengines["DEFAULT"]`       | No        |
+| SearchEngineUrlCheck     | All engine URL templates             | No        |
+| WebRTCPolicyCheck        | `content.webrtc_ip_handling_policy`  | No        |
+| CookieAcceptCheck        | `content.cookies.accept`             | No        |
+| StartPageCheck           | `url.start_pages`                    | No        |
+| EditorCommandCheck       | `editor.command` (list + `{}` check) | No        |
+| DownloadDirCheck         | `downloads.location.directory`       | No        |
+| TabTitleFormatCheck      | `tabs.title.format`                  | No        |
+
+Health issues appear in qutebrowser's message bar and the log. No
+configuration is silently mis-applied; errors are visible on `:messages`.
+
+---
+
+## Policy Chain
+
+`PolicyChain` wraps `PolicyAction` decisions around each `config.set()` call:
 
 ```python
-from core.health import HealthCheck, HealthIssue, Severity
-
-class NoAutoplayCheck(HealthCheck):
-    name = "no-autoplay"
-    def run(self, settings, report):
-        if settings.get("content.autoplay", True):
-            report.add(HealthIssue(
-                check=self.name, severity=Severity.WARNING,
-                message="content.autoplay is enabled globally",
-                key="content.autoplay",
-            ))
+ALLOW  → apply as-is
+MODIFY → apply modified_value instead (e.g. GeolocationPolicy under HARDENED)
+WARN   → log warning, apply as-is (e.g. ProxyPolicy under PARANOID)
+DENY   → skip this key entirely (e.g. ReadOnlyPolicy)
 ```
 
-The orchestrator calls `HealthChecker.default()`. To include custom checks,
-build the orchestrator with a modified checker registered via a `POST_APPLY`
-lifecycle hook — this avoids modifying `orchestrator.py`.
+Policies are composable and ordered by `priority` field.
+
+---
+
+## Extension Points (summary)
+
+| What to add                | Where                        | Priority range |
+| -------------------------- | ---------------------------- | -------------- |
+| New theme                  | `themes/extended.py`         | —              |
+| New layer                  | `layers/<name>.py`           | 60–80          |
+| New context                | `layers/context.py` table    | —              |
+| New per-host rule          | `policies/host.py`           | —              |
+| New pipeline stage         | `core/pipeline.py` or inline | —              |
+| New search engine set      | `strategies/search.py`       | —              |
+| New health check           | `core/health.py`             | —              |
+| New lifecycle hook         | `config.py` wiring section   | —              |
+| Personal settings override | `config.py` USER\_\* section | —              |

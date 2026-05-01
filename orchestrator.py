@@ -1,7 +1,7 @@
 """
 orchestrator.py
 ===============
-Configuration Orchestrator  (composition root)
+Configuration Orchestrator  (composition root)  v5
 
 Responsibilities:
   1. Build the LayerStack
@@ -10,25 +10,16 @@ Responsibilities:
   4. Apply resolved config to qutebrowser via ConfigApplier
   5. Emit lifecycle events via the MessageRouter
   6. Apply per-host overrides via HostPolicyRegistry
+  7. Register QueryBus handlers for introspection
 
-This is the *only* file with knowledge of the full system.
-All other modules are purely functional; dependencies flow inward.
+v5 changes:
+  - QueryBus handlers for GetMergedConfigQuery and GetHealthReportQuery
+  - emit_health() called after HealthChecker.check()
+  - ContextSwitchedEvent emitted when ContextLayer is active
+  - Cleaner policy_chain presence check using len() / bool()
+  - All type annotations tightened for strict-mode
 
 Principle: single wiring point, explicit dependency injection.
-
-Changelog vs v2:
-  - apply_host_policies() now accepts an optional HostPolicyRegistry
-    (from policies/host.py) in addition to BehaviorLayer.host_policies().
-    Registry rules are applied first; BehaviorLayer rules are appended.
-    This allows structured policy management without modifying BehaviorLayer.
-  - ConfigOrchestrator.__init__ accepts optional host_registry parameter.
-  - summary() now includes host-rule count.
-  - Policy chain (from core/strategy.py) is applied per-key during
-    apply_settings() when a policy_chain is provided.
-
-Strict-mode notes (Pyright):
-  - All Optional[] parameters have explicit None defaults.
-  - HostPolicyRegistry imported lazily to avoid circular import at module level.
 """
 
 from __future__ import annotations
@@ -41,12 +32,16 @@ from core.lifecycle import LifecycleHook, LifecycleManager
 from core.pipeline import ConfigPacket
 from core.protocol import (
     ConfigErrorEvent,
+    GetHealthReportQuery,
+    GetMergedConfigQuery,
+    HealthReportReadyEvent,
     LayerAppliedEvent,
     MessageRouter,
+    Query,
 )
 from core.state import ConfigEvent, ConfigState, ConfigStateMachine
 from core.strategy import PolicyAction, PolicyChain
-from core.health import HealthChecker
+from core.health import HealthChecker, HealthReport
 
 logger = logging.getLogger("qute.orchestrator")
 
@@ -90,7 +85,7 @@ class ConfigApplier:
           - DENY   → skip this key entirely
         """
         errors: List[str] = []
-        ctx: ConfigDict = {}   # context for policy evaluation (can carry metadata)
+        ctx: ConfigDict = {}
 
         for key, value in settings.items():
             applied_value = value
@@ -99,15 +94,13 @@ class ConfigApplier:
             if policy_chain is not None:
                 decision = policy_chain.evaluate(key, value, ctx)
                 if decision.action == PolicyAction.DENY:
-                    logger.debug(
-                        "[Applier] DENY %s: %s", key, decision.reason
-                    )
+                    logger.debug("[Applier] DENY %s: %s", key, decision.reason)
                     continue
                 elif decision.action == PolicyAction.MODIFY:
                     applied_value = decision.modified_value
                     logger.debug(
                         "[Applier] MODIFY %s: %r → %r (%s)",
-                        key, value, applied_value, decision.reason
+                        key, value, applied_value, decision.reason,
                     )
                 elif decision.action == PolicyAction.WARN:
                     logger.warning(
@@ -135,7 +128,7 @@ class ConfigApplier:
 
         Args:
             bindings:    list of (key, command, mode) or (key, command) tuples.
-            clear_first: if True, call _clear_defaults() before binding.
+            clear_first: reserved for future use (selective unbind).
         """
         errors: List[str] = []
         if clear_first:
@@ -211,6 +204,11 @@ class ConfigOrchestrator:
         orchestrator.apply(applier)       → writes to qutebrowser config API
         orchestrator.apply_host_policies  → pattern-scoped overrides
         orchestrator.reload(applier)      → hot-reload (re-runs build + apply)
+
+    Introspection (via QueryBus)::
+
+        router.ask(GetMergedConfigQuery()) → Dict[str, Any]
+        router.ask(GetHealthReportQuery()) → HealthReport
     """
 
     def __init__(
@@ -220,19 +218,42 @@ class ConfigOrchestrator:
         lifecycle:     LifecycleManager,
         fsm:           ConfigStateMachine,
         policy_chain:  Optional[PolicyChain] = None,
-        host_registry: Any = None,   # Optional[HostPolicyRegistry] — avoids import
+        host_registry: Any = None,
     ) -> None:
         self._stack         = stack
         self._router        = router
         self._lifecycle     = lifecycle
         self._fsm           = fsm
         self._policy        = policy_chain or PolicyChain()
-        self._host_registry = host_registry   # HostPolicyRegistry | None
+        self._host_registry = host_registry
         self._resolved:     Optional[Dict[str, ConfigPacket]] = None
         self._applier:      Optional[ConfigApplier]           = None
+        self._last_report:  Optional[HealthReport]            = None
 
-        # Wire FSM transition log observer
+        # Wire FSM transition observer
         self._fsm.on_transition(self._on_state_transition)
+
+        # Wire QueryBus handlers for introspection
+        self._router.queries.register(
+            GetMergedConfigQuery,
+            self._handle_get_merged_config,
+        )
+        self._router.queries.register(
+            GetHealthReportQuery,
+            self._handle_get_health_report,
+        )
+
+    # ── QueryBus handlers ──────────────────────────────────────────────
+
+    def _handle_get_merged_config(self, _query: Query) -> ConfigDict:
+        """Return the fully-merged settings dict."""
+        if not hasattr(self._stack, "_merged"):
+            return {}
+        return dict(self._stack.merged)
+
+    def _handle_get_health_report(self, _query: Query) -> Optional[HealthReport]:
+        """Return the last HealthReport (or None if not yet run)."""
+        return self._last_report
 
     # ── Phase 1: Build ─────────────────────────────────────────────────
 
@@ -267,7 +288,25 @@ class ConfigOrchestrator:
             "settings=%d  bindings=%d  aliases=%d",
             len(self._resolved), n_sets, n_binds, n_alias,
         )
+
+        # Emit context info if ContextLayer is active
+        self._maybe_emit_context_event()
+
         return self._resolved
+
+    def _maybe_emit_context_event(self) -> None:
+        """Emit ContextSwitchedEvent if a ContextLayer is registered."""
+        try:
+            from layers.context import ContextLayer
+            from core.protocol import ContextSwitchedEvent
+            layer = self._stack.get("context")
+            if isinstance(layer, ContextLayer):
+                self._router.emit(ContextSwitchedEvent(
+                    old_context="default",
+                    new_context=layer.active_mode.value,
+                ))
+        except ImportError:
+            pass
 
     # ── Phase 2: Apply ─────────────────────────────────────────────────
 
@@ -275,12 +314,8 @@ class ConfigOrchestrator:
         """
         Write the resolved config to qutebrowser.
 
-        Must be called after build().  The FSM is expected to already be in
-        the APPLYING state (entered during build() via VALIDATE_DONE).
+        Must be called after build().
         FSM exits to ACTIVE on success or ERROR on failure.
-
-        The optional policy_chain (injected at construction time) is evaluated
-        per-key inside apply_settings().
         """
         if self._resolved is None:
             raise RuntimeError("call build() before apply()")
@@ -293,9 +328,9 @@ class ConfigOrchestrator:
 
             merged = self._stack.merged
 
-            # 1. Settings — policy chain applied per-key if configured
-            settings = merged.get("settings", {})
-            policy_chain = self._policy if len(self._policy._policies) > 0 else None
+            # 1. Settings — policy chain evaluated per-key if populated
+            settings     = merged.get("settings", {})
+            policy_chain = self._policy if bool(self._policy._policies) else None
             all_errors.extend(applier.apply_settings(settings, policy_chain))
 
             # 2. Keybindings (accumulated across all layers)
@@ -306,22 +341,32 @@ class ConfigOrchestrator:
             aliases = merged.get("aliases", {})
             all_errors.extend(applier.apply_aliases(aliases))
 
-            # 4. Per-layer applied events (for subscribers / logging)
+            # 4. Per-layer applied events
             for layer_name, packet in self._resolved.items():
                 self._router.emit(LayerAppliedEvent(
                     layer_name=layer_name,
                     key_count=len(packet.data.get("settings", packet.data)),
                 ))
 
-            # 5. Health checks — validate resolved settings for common issues
-            checker = HealthChecker.default()
-            health_report = checker.check(settings)
+            # 5. Health checks — validate resolved settings
+            checker           = HealthChecker.default()
+            health_report     = checker.check(settings)
+            self._last_report = health_report
+
             if not health_report.ok:
                 logger.warning(
                     "[Orchestrator] health check: %s", health_report.summary()
                 )
             else:
                 logger.debug("[Orchestrator] health check: all checks passed")
+
+            # Emit health event for subscribers
+            self._router.emit_health(
+                ok            = health_report.ok,
+                error_count   = len(health_report.errors),
+                warning_count = len(health_report.warnings),
+                info_count    = len(health_report.infos),
+            )
 
             self._lifecycle.run(LifecycleHook.POST_APPLY)
 
@@ -346,15 +391,9 @@ class ConfigOrchestrator:
         """
         Apply per-host configuration overrides.
 
-        Two sources, applied in order:
-          1. HostPolicyRegistry (from policies/host.py) — if injected at
-             construction time.  Structured, queryable, data-driven.
-          2. BehaviorLayer.host_policies() — legacy list for backwards compat.
-
-        Registry rules are preferred; BehaviorLayer rules are the escape hatch
-        for quick one-off additions directly in behavior.py.
-
-        Called after the main apply() pass.
+        Sources (applied in order):
+          1. HostPolicyRegistry (from policies/host.py) — structured, queryable
+          2. BehaviorLayer.host_policies() — legacy list for backwards compat
         """
         all_errors: List[str] = []
         rule_count = 0
@@ -367,7 +406,7 @@ class ConfigOrchestrator:
                 if not errors:
                     logger.debug(
                         "[Orchestrator] host-registry: %s  (%s)",
-                        rule.pattern, rule.description
+                        rule.pattern, rule.description,
                     )
                 rule_count += 1
 
@@ -427,6 +466,9 @@ class ConfigOrchestrator:
             )
         if n_hosts:
             lines.append(f"Host rules: {n_hosts} (from HostPolicyRegistry)")
+        if self._last_report is not None:
+            status = "✓ healthy" if self._last_report.ok else "✗ has errors"
+            lines.append(f"Health: {status}  ({self._last_report.summary().splitlines()[0]})")
         return "\n".join(lines)
 
     # ── Private ────────────────────────────────────────────────────────
