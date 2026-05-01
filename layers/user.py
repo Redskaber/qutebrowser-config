@@ -50,10 +50,10 @@ class UserLayer(BaseConfigLayer):
     def _settings(self) -> ConfigDict:
         return {
             # ── Example: override the terminal used for editor commands ──
-            # "editor.command": ["kitty", "-e", "nvim", "{}"],
+            "editor.command": ["kitty", "-e", "nvim", "{}"],
 
             # ── Example: override the default start page ────────────────
-            # "url.start_pages": ["https://start.duckduckgo.com"],
+            "url.start_pages": ["https://www.bilibili.com"],
 
             # ── Example: bump the default zoom level ────────────────────
             # "zoom.default": "110%",
@@ -76,5 +76,7 @@ class UserLayer(BaseConfigLayer):
     def _aliases(self) -> ConfigDict:
         return {
             # ── Example: alias for a frequently used command ────────────
-            # "gh": "open -t https://github.com",
+            "gh": "open -t https://github.com/redskaber",
         }
+
+

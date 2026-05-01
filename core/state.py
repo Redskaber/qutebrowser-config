@@ -22,6 +22,12 @@ Principles:
 
 NOTE: LifecycleHook and LifecycleManager are defined in lifecycle.py.
       Import them from there — NOT from this module.
+
+Strict-mode notes (Pyright):
+  - Removed unused ``Set`` import.
+  - ``send(**payload)`` uses ``**payload: Any`` instead of bare ``**payload``.
+  - ``_safe_call`` uses ``Callable[..., Any]`` instead of bare ``Callable``.
+  - Lambda in observer loop uses explicit bound default to avoid late-binding.
 """
 
 from __future__ import annotations
@@ -29,7 +35,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from functools import partial
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("qute.state")
 
@@ -37,7 +44,6 @@ logger = logging.getLogger("qute.state")
 # ─────────────────────────────────────────────
 # State Definitions
 # ─────────────────────────────────────────────
-
 class ConfigState(Enum):
     """All valid states in the configuration lifecycle."""
     IDLE       = auto()   # initial; nothing loaded
@@ -65,7 +71,6 @@ class ConfigEvent(Enum):
 # ─────────────────────────────────────────────
 # Transition Table  (single source of truth)
 # ─────────────────────────────────────────────
-
 # (from_state, event) → to_state
 #
 # Design notes:
@@ -75,54 +80,51 @@ class ConfigEvent(Enum):
 #   • RELOADING + START_LOAD → LOADING allows build() to be called directly
 #     after reload() triggers the RELOAD event.
 #   • IDLE + RELOAD → LOADING is a convenience path for manual/test invocations.
-
 TRANSITIONS: Dict[Tuple[ConfigState, ConfigEvent], ConfigState] = {
     # ── Normal happy path ──────────────────────────────────────────────
-    (ConfigState.IDLE,       ConfigEvent.START_LOAD):    ConfigState.LOADING,
-    (ConfigState.LOADING,    ConfigEvent.LOAD_DONE):     ConfigState.VALIDATING,
-    (ConfigState.VALIDATING, ConfigEvent.VALIDATE_DONE): ConfigState.APPLYING,
-    (ConfigState.APPLYING,   ConfigEvent.APPLY_DONE):    ConfigState.ACTIVE,
+    (ConfigState.IDLE,       ConfigEvent.START_LOAD     ): ConfigState.LOADING,
+    (ConfigState.LOADING,    ConfigEvent.LOAD_DONE      ): ConfigState.VALIDATING,
+    (ConfigState.VALIDATING, ConfigEvent.VALIDATE_DONE  ): ConfigState.APPLYING,
+    (ConfigState.APPLYING,   ConfigEvent.APPLY_DONE     ): ConfigState.ACTIVE,
 
     # ── Error paths ────────────────────────────────────────────────────
-    (ConfigState.LOADING,    ConfigEvent.LOAD_FAILED):   ConfigState.ERROR,
-    (ConfigState.VALIDATING, ConfigEvent.VALIDATE_FAIL): ConfigState.ERROR,
-    (ConfigState.APPLYING,   ConfigEvent.APPLY_FAIL):    ConfigState.ERROR,
+    (ConfigState.LOADING,    ConfigEvent.LOAD_FAILED    ): ConfigState.ERROR,
+    (ConfigState.VALIDATING, ConfigEvent.VALIDATE_FAIL  ): ConfigState.ERROR,
+    (ConfigState.APPLYING,   ConfigEvent.APPLY_FAIL     ): ConfigState.ERROR,
 
     # ── Hot-reload paths ───────────────────────────────────────────────
-    (ConfigState.ACTIVE,     ConfigEvent.RELOAD):        ConfigState.RELOADING,
-    (ConfigState.ERROR,      ConfigEvent.RELOAD):        ConfigState.RELOADING,
-    (ConfigState.RELOADING,  ConfigEvent.START_LOAD):    ConfigState.LOADING,
+    (ConfigState.ACTIVE,     ConfigEvent.RELOAD         ): ConfigState.RELOADING,
+    (ConfigState.ERROR,      ConfigEvent.RELOAD         ): ConfigState.RELOADING,
+    (ConfigState.RELOADING,  ConfigEvent.START_LOAD     ): ConfigState.LOADING,
 
     # ── Convenience / recovery ─────────────────────────────────────────
     # Allow RELOAD from IDLE for testing and manual invocation.
-    (ConfigState.IDLE,       ConfigEvent.RELOAD):        ConfigState.LOADING,
+    (ConfigState.IDLE,       ConfigEvent.RELOAD         ): ConfigState.LOADING,
 
     # Global reset — bring any terminal state back to IDLE.
-    (ConfigState.ERROR,      ConfigEvent.RESET):         ConfigState.IDLE,
-    (ConfigState.ACTIVE,     ConfigEvent.RESET):         ConfigState.IDLE,
-    (ConfigState.RELOADING,  ConfigEvent.RESET):         ConfigState.IDLE,
+    (ConfigState.ERROR,      ConfigEvent.RESET          ): ConfigState.IDLE,
+    (ConfigState.ACTIVE,     ConfigEvent.RESET          ): ConfigState.IDLE,
+    (ConfigState.RELOADING,  ConfigEvent.RESET          ): ConfigState.IDLE,
 }
 
 
 # ─────────────────────────────────────────────
 # State Context  (mutable payload per lifecycle)
 # ─────────────────────────────────────────────
-
 @dataclass
 class StateContext:
     """Mutable context carried alongside the FSM state."""
-    current:          ConfigState = ConfigState.IDLE
+    current:          ConfigState           = ConfigState.IDLE
     previous:         Optional[ConfigState] = None
-    errors:           List[str] = field(default_factory=list)
-    warnings:         List[str] = field(default_factory=list)
-    metadata:         Dict[str, Any] = field(default_factory=dict)
-    transition_count: int = 0
+    errors:           List[str]             = field(default_factory=list[str])
+    warnings:         List[str]             = field(default_factory=list[str])
+    metadata:         Dict[str, Any]        = field(default_factory=dict[str, Any])
+    transition_count: int                   = 0
 
 
 # ─────────────────────────────────────────────
 # Observer type aliases
 # ─────────────────────────────────────────────
-
 StateObserver = Callable[[ConfigState, ConfigState, ConfigEvent], None]
 # signature: (from_state, to_state, triggering_event) → None
 
@@ -133,7 +135,6 @@ ExitAction   = Callable[["StateContext"], None]
 # ─────────────────────────────────────────────
 # State Machine
 # ─────────────────────────────────────────────
-
 class ConfigStateMachine:
     """
     Finite State Machine for the configuration lifecycle.
@@ -155,7 +156,6 @@ class ConfigStateMachine:
         self._exit_actions:  Dict[ConfigState, List[ExitAction]] = {}
 
     # ── Public interface ───────────────────────────────────────────────
-
     @property
     def state(self) -> ConfigState:
         return self._context.current
@@ -164,7 +164,7 @@ class ConfigStateMachine:
     def context(self) -> StateContext:
         return self._context
 
-    def send(self, event: ConfigEvent, **payload) -> bool:
+    def send(self, event: ConfigEvent, **payload: Any) -> bool:
         """
         Fire an event against the current state.
 
@@ -206,9 +206,10 @@ class ConfigStateMachine:
             self._safe_call(action, self._context, label=f"entry/{next_state.name}")
 
         # ── Observers ─────────────────────────────────────────────────
+        # Use explicit bound defaults to avoid late-binding in the functools.partial.
         for obs in self._observers:
             self._safe_call(
-                lambda o=obs: o(from_state, next_state, event),
+                partial(obs, from_state, next_state, event),
                 label="observer",
             )
 
@@ -240,9 +241,8 @@ class ConfigStateMachine:
         self._context.warnings.append(msg)
 
     # ── Helpers ────────────────────────────────────────────────────────
-
     @staticmethod
-    def _safe_call(fn: Callable, *args, label: str = "handler") -> None:
+    def _safe_call(fn: Callable[..., Any], *args: Any, label: str = "handler") -> None:
         try:
             fn(*args)
         except Exception as exc:
@@ -253,3 +253,5 @@ class ConfigStateMachine:
             f"<FSM state={self._context.current.name} "
             f"transitions={self._context.transition_count}>"
         )
+
+

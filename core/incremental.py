@@ -36,7 +36,6 @@ ConfigDict = Dict[str, Any]
 # ─────────────────────────────────────────────
 # Change Types
 # ─────────────────────────────────────────────
-
 class ChangeKind(Enum):
     ADDED   = auto()   # key exists in new, not in old
     REMOVED = auto()   # key exists in old, not in new
@@ -65,7 +64,6 @@ class ConfigChange:
 # ─────────────────────────────────────────────
 # Snapshot (Memento pattern)
 # ─────────────────────────────────────────────
-
 @dataclass
 class ConfigSnapshot:
     """Immutable point-in-time config state."""
@@ -96,7 +94,6 @@ class ConfigSnapshot:
 # ─────────────────────────────────────────────
 # Differ
 # ─────────────────────────────────────────────
-
 class ConfigDiffer:
     """
     Computes the delta between two ConfigSnapshots.
@@ -156,7 +153,6 @@ class ConfigDiffer:
 # ─────────────────────────────────────────────
 # Snapshot Store (history + rollback)
 # ─────────────────────────────────────────────
-
 class SnapshotStore:
     """
     Maintains a bounded history of ConfigSnapshots.
@@ -219,7 +215,6 @@ class SnapshotStore:
 # ─────────────────────────────────────────────
 # Incremental Applier
 # ─────────────────────────────────────────────
-
 ChangeObserver = Callable[[List[ConfigChange]], None]
 
 
@@ -299,3 +294,5 @@ class IncrementalApplier:
             applied, len(changes), len(errors)
         )
         return errors
+
+

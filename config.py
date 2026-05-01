@@ -12,6 +12,17 @@ Do not touch the architecture modules unless you intend to extend them.
 
 Compatible: qutebrowser ≥ 3.0  ·  PyQt6  ·  Python ≥ 3.11
 NixOS:      paths resolve via the nix store automatically.
+
+Strict-mode notes (Pyright):
+  - ``_apply(config, c)`` parameters annotated as ``Any`` — qutebrowser
+    injects these objects at runtime; no stub types are available.
+  - Event subscriber lambdas cast to the concrete event type so Pyright
+    can resolve the subclass-specific attributes (layer_name, key_count, …).
+  - Lifecycle decorator functions are assigned to ``_`` to suppress the
+    ``reportUnusedFunction`` diagnostic (the decorator already registers them;
+    the local name is intentionally discarded).
+  - ``ConfigEvent`` import removed — it was imported but not used in this file.
+  - ``ThemeChangedEvent`` subscriber cast similarly to ``ThemeChangedEvent``.
 """
 
 from __future__ import annotations
@@ -19,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from typing import Any
 
 # ── Make core/ and layers/ importable ─────────────────────────────────────────
 _config_dir = os.path.dirname(os.path.abspath(__file__))
@@ -28,8 +40,14 @@ if _config_dir not in sys.path:
 # ── Architecture ──────────────────────────────────────────────────────────────
 from core.layer     import LayerStack
 from core.lifecycle import LifecycleHook, LifecycleManager
-from core.protocol  import ConfigErrorEvent, LayerAppliedEvent, MessageRouter, ThemeChangedEvent
-from core.state     import ConfigEvent, ConfigStateMachine
+from core.protocol  import (
+    ConfigErrorEvent,
+    Event,
+    LayerAppliedEvent,
+    MessageRouter,
+    ThemeChangedEvent,
+)
+from core.state import ConfigStateMachine
 
 from layers.appearance  import AppearanceLayer
 from layers.base        import BaseLayer
@@ -121,31 +139,36 @@ def _build_orchestrator() -> ConfigOrchestrator:
         stack.register(UserLayer(leader=LEADER_KEY))
 
     # ── Lifecycle hooks ───────────────────────────────────────────────
+    # Assign to _ to avoid Pyright's reportUnusedFunction.  The decorator
+    # registers the function internally; the local binding is not needed.
     @lifecycle.decorator(LifecycleHook.POST_APPLY, priority=100)
-    def _log_apply_done():
+    def _log_apply_done() -> None:
         logger.info("✓ qutebrowser config applied successfully")
 
     @lifecycle.decorator(LifecycleHook.ON_ERROR, priority=10)
-    def _log_error():
+    def _log_error() -> None:
         logger.error("✗ config apply encountered errors — check :messages")
 
     # ── Event observers ───────────────────────────────────────────────
-    router.events.subscribe(
-        LayerAppliedEvent,
-        lambda e: logger.info(
-            "layer applied: %-12s (%d settings)", e.layer_name, e.key_count
-        ),
-    )
-    router.events.subscribe(
-        ConfigErrorEvent,
-        lambda e: logger.error(
-            "config error [%s]: %s", e.layer_name or "?", e.error_msg
-        ),
-    )
-    router.events.subscribe(
-        ThemeChangedEvent,
-        lambda e: logger.info("theme changed: %s", e.theme_name),
-    )
+    # Cast the generic Event to the concrete subtype inside each lambda so
+    # Pyright can resolve the subclass-specific attributes without raising
+    # reportAttributeAccessIssue / reportUnknownMemberType.
+
+    def _on_layer_applied(e: Event) -> None:
+        evt = e if isinstance(e, LayerAppliedEvent) else LayerAppliedEvent()
+        logger.info("layer applied: %-12s (%d settings)", evt.layer_name, evt.key_count)
+
+    def _on_config_error(e: Event) -> None:
+        evt = e if isinstance(e, ConfigErrorEvent) else ConfigErrorEvent()
+        logger.error("config error [%s]: %s", evt.layer_name or "?", evt.error_msg)
+
+    def _on_theme_changed(e: Event) -> None:
+        evt = e if isinstance(e, ThemeChangedEvent) else ThemeChangedEvent()
+        logger.info("theme changed: %s", evt.theme_name)
+
+    router.events.subscribe(LayerAppliedEvent, _on_layer_applied)
+    router.events.subscribe(ConfigErrorEvent,  _on_config_error)
+    router.events.subscribe(ThemeChangedEvent, _on_theme_changed)
 
     return ConfigOrchestrator(
         stack=stack,
@@ -162,7 +185,7 @@ def _build_orchestrator() -> ConfigOrchestrator:
 # ║  `config` and `c` are injected by qutebrowser into this namespace.       ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
-def _apply(config, c):
+def _apply(config: Any, c: Any) -> None:
     """
     Main entry point called by qutebrowser.
 
@@ -175,7 +198,7 @@ def _apply(config, c):
 
         # Phase 1: Build — resolve all layers into merged config
         orchestrator.build()
-        logger.info("[config.py] %s", orchestrator.summary())
+        logger.info("[config.py] \n%s", orchestrator.summary())
 
         # Phase 2: Apply — write to qutebrowser API
         applier = ConfigApplier(config, c)
@@ -204,7 +227,7 @@ try:
     # Load (or explicitly skip) GUI-configured autoconfig.yml.
     # False = don't load autoconfig; all settings are managed by this file.
     config.load_autoconfig(False)  # type: ignore[name-defined]
-    _apply(config, c)  # type: ignore[name-defined]
+    _apply(config, c)              # type: ignore[name-defined]
 except NameError:
     # Running outside qutebrowser (e.g. linting, tests) — skip apply.
     logger.info("[config.py] running outside qutebrowser — skipping _apply()")

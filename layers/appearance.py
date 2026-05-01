@@ -65,8 +65,8 @@ class ColorScheme:
     hint_border: str = "#89b4fa"
 
     # ── Selection ──────────────────────────────────────────────────────
-    select_bg:  str = "#45475a"
-    select_fg:  str = "#cdd6f4"
+    select_bg:   str = "#45475a"
+    select_fg:   str = "#cdd6f4"
 
     # ── Typography ─────────────────────────────────────────────────────
     font_mono:     str = "JetBrainsMono Nerd Font"
@@ -331,3 +331,5 @@ class AppearanceLayer(BaseConfigLayer):
     @classmethod
     def available_themes(cls) -> List[str]:
         return list(THEMES.keys())
+
+

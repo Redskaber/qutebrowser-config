@@ -35,7 +35,7 @@ from enum import Enum, auto
 from typing import Any, Dict, List, Tuple
 
 from core.layer import BaseConfigLayer
-from core.pipeline import ConfigPacket, LogStage, Pipeline, ValidateStage
+from core.pipeline import LogStage, Pipeline, ValidateStage  # ConfigPacket
 
 ConfigDict = Dict[str, Any]
 
@@ -69,7 +69,6 @@ class PrivacyLayer(BaseConfigLayer):
         self._leader  = leader
 
     # ── Settings ──────────────────────────────────────────────────────
-
     def _settings(self) -> ConfigDict:
         base = self._standard_settings()
 
@@ -168,7 +167,6 @@ class PrivacyLayer(BaseConfigLayer):
         }
 
     # ── Keybindings ───────────────────────────────────────────────────
-
     def _keybindings(self) -> List[Tuple[str, str, str]]:
         L = self._leader
         return [
@@ -183,7 +181,6 @@ class PrivacyLayer(BaseConfigLayer):
         ]
 
     # ── Pipeline (layer-level validation) ─────────────────────────────
-
     def pipeline(self) -> Pipeline:
         """
         Run a lightweight validation pass on the layer's output packet.
@@ -208,8 +205,10 @@ class PrivacyLayer(BaseConfigLayer):
         )
 
     def validate(self, data: ConfigDict) -> List[str]:
-        errors = []
+        errors: List[str] = []
         settings = data.get("settings", data)  # tolerate flat or nested
         if settings.get("content.javascript.enabled") and self._profile == PrivacyProfile.PARANOID:
             errors.append("PARANOID profile should not enable JavaScript")
         return errors
+
+

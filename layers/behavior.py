@@ -18,7 +18,7 @@ Pattern: Data-Driven Configuration + Command pattern for keybindings
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from core.layer import BaseConfigLayer
 
@@ -28,22 +28,20 @@ ConfigDict = Dict[str, Any]
 # ─────────────────────────────────────────────
 # Per-Host Policy (data-driven overrides)
 # ─────────────────────────────────────────────
-
 @dataclass
 class HostPolicy:
     """
     Declarative per-host configuration override.
     Applied via config.set(..., pattern=host_pattern).
     """
-    pattern: str                    # e.g. "*.google.com"
-    settings: ConfigDict = field(default_factory=dict)
-    description: str = ""
+    pattern:     str        # e.g. "*.google.com"
+    settings:    ConfigDict = field(default_factory=dict[str, Any])
+    description: str        = ""
 
 
 # ─────────────────────────────────────────────
 # Behavior Layer
 # ─────────────────────────────────────────────
-
 class BehaviorLayer(BaseConfigLayer):
     """
     UX behavior configuration.
@@ -266,3 +264,5 @@ class BehaviorLayer(BaseConfigLayer):
                 description="Local development: allow all",
             ),
         ]
+
+

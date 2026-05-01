@@ -15,27 +15,28 @@ Principles:
   - Boundary Explicit: cross-module calls must go through protocol
 
 Pattern: Event-Driven Architecture + CQRS (Command/Query Separation)
+
+Strict-mode notes (Pyright):
+  - Removed unused imports: ``ABC``, ``abstractmethod``, ``Enum``, ``auto``,
+    ``Generic`` (none were used in this module's actual code).
+  - ``EventHandler``, ``CommandHandler``, ``QueryHandler`` are explicit
+    ``Callable`` aliases with concrete signatures.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Any, Callable, Dict, Generic, List, Optional, Type, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Type, TypeVar
 from uuid import uuid4
 
 logger = logging.getLogger("qute.protocol")
-
 T = TypeVar("T")
-
 
 # ─────────────────────────────────────────────
 # Message Types
 # ─────────────────────────────────────────────
-
 @dataclass(frozen=True)
 class Message:
     """Base message: immutable, carries identity and payload."""
@@ -76,7 +77,6 @@ class Query(Message):
 # ─────────────────────────────────────────────
 # Concrete Events
 # ─────────────────────────────────────────────
-
 @dataclass(frozen=True)
 class LayerAppliedEvent(Event):
     layer_name: str = ""
@@ -104,7 +104,6 @@ class BindingRegisteredEvent(Event):
 # ─────────────────────────────────────────────
 # Concrete Commands
 # ─────────────────────────────────────────────
-
 @dataclass(frozen=True)
 class ApplyLayerCommand(Command):
     layer_name: str = ""
@@ -125,7 +124,6 @@ class SetOptionCommand(Command):
 # ─────────────────────────────────────────────
 # Concrete Queries
 # ─────────────────────────────────────────────
-
 @dataclass(frozen=True)
 class GetOptionQuery(Query):
     key: str = ""
@@ -140,23 +138,23 @@ class ListLayersQuery(Query):
 # ─────────────────────────────────────────────
 # Event Bus (Pub/Sub)
 # ─────────────────────────────────────────────
-
-EventHandler = Callable[[Event], None]
+EventHandler   = Callable[[Event], None]
 CommandHandler = Callable[[Command], Optional[Any]]
-QueryHandler = Callable[[Query], Any]
+QueryHandler   = Callable[[Query], Any]
 
 
 class EventBus:
     """
     Thread-safe publish/subscribe bus.
 
-    Usage:
+    Usage::
+
         bus = EventBus()
         bus.subscribe(LayerAppliedEvent, lambda e: print(e))
         bus.publish(LayerAppliedEvent(layer_name="base"))
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._subscribers: Dict[str, List[EventHandler]] = {}
         self._lock = threading.RLock()
         self._wildcard: List[EventHandler] = []
@@ -169,7 +167,11 @@ class EventBus:
         topic = event_type.__name__
         with self._lock:
             self._subscribers.setdefault(topic, []).append(handler)
-        logger.debug("[EventBus] subscribed: %s → %s", topic, handler.__name__)
+        logger.debug(
+            "[EventBus] subscribed: %s → %s",
+            topic,
+            getattr(handler, "__name__", repr(handler)),
+        )
         return self
 
     def subscribe_all(self, handler: EventHandler) -> "EventBus":
@@ -190,8 +192,8 @@ class EventBus:
             try:
                 handler(event)
                 count += 1
-            except Exception as e:
-                logger.error("[EventBus] handler error for %s: %s", topic, e)
+            except Exception as exc:
+                logger.error("[EventBus] handler error for %s: %s", topic, exc)
         logger.debug("[EventBus] published %s → %d handlers", topic, count)
         return count
 
@@ -206,14 +208,13 @@ class EventBus:
 # ─────────────────────────────────────────────
 # Command Bus
 # ─────────────────────────────────────────────
-
 class CommandBus:
     """
     Routes Commands to exactly one registered handler.
     Fails loudly if no handler or multiple handlers.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._handlers: Dict[str, CommandHandler] = {}
 
     def register(self, command_type: Type[Command], handler: CommandHandler) -> None:
@@ -221,7 +222,11 @@ class CommandBus:
         if topic in self._handlers:
             raise ValueError(f"CommandBus: duplicate handler for {topic}")
         self._handlers[topic] = handler
-        logger.debug("[CommandBus] registered: %s → %s", topic, handler.__name__)
+        logger.debug(
+            "[CommandBus] registered: %s → %s",
+            topic,
+            getattr(handler, "__name__", repr(handler)),
+        )
 
     def dispatch(self, command: Command) -> Optional[Any]:
         topic = command.topic()
@@ -232,19 +237,18 @@ class CommandBus:
             result = handler(command)
             logger.debug("[CommandBus] dispatched %s → ok", topic)
             return result
-        except Exception as e:
-            logger.error("[CommandBus] handler error for %s: %s", topic, e)
+        except Exception as exc:
+            logger.error("[CommandBus] handler error for %s: %s", topic, exc)
             raise
 
 
 # ─────────────────────────────────────────────
 # Query Bus
 # ─────────────────────────────────────────────
-
 class QueryBus:
     """Routes Queries to exactly one handler; returns result."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._handlers: Dict[str, QueryHandler] = {}
 
     def register(self, query_type: Type[Query], handler: QueryHandler) -> None:
@@ -262,17 +266,16 @@ class QueryBus:
 # ─────────────────────────────────────────────
 # Message Router (aggregate facade)
 # ─────────────────────────────────────────────
-
 class MessageRouter:
     """
     Unified entry point for all inter-module communication.
     Modules receive this; they don't know about each other.
     """
 
-    def __init__(self):
-        self.events = EventBus()
+    def __init__(self) -> None:
+        self.events   = EventBus()
         self.commands = CommandBus()
-        self.queries = QueryBus()
+        self.queries  = QueryBus()
 
     def emit(self, event: Event) -> int:
         return self.events.publish(event)
@@ -282,3 +285,5 @@ class MessageRouter:
 
     def ask(self, query: Query) -> Any:
         return self.queries.ask(query)
+
+

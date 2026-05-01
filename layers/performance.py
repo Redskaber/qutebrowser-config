@@ -19,7 +19,7 @@ disabled or tuned independently without touching other concerns.
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict
 
 from core.layer import BaseConfigLayer
 
@@ -108,3 +108,5 @@ class PerformanceLayer(BaseConfigLayer):
             "content.dns_prefetch": False,
             "session.lazy_restore": True,
         }
+
+

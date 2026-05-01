@@ -33,7 +33,6 @@ ConfigDict = Dict[str, Any]
 # ─────────────────────────────────────────────
 # Layer Protocol (Dependency Inversion boundary)
 # ─────────────────────────────────────────────
-
 class LayerProtocol(ABC):
     """
     Abstract contract every configuration layer must satisfy.
@@ -79,7 +78,6 @@ class LayerProtocol(ABC):
 # ─────────────────────────────────────────────
 # Layer Registration Record
 # ─────────────────────────────────────────────
-
 @dataclass
 class LayerRecord:
     layer: LayerProtocol
@@ -90,7 +88,6 @@ class LayerRecord:
 # ─────────────────────────────────────────────
 # Layer Stack (Composite)
 # ─────────────────────────────────────────────
-
 class LayerStack:
     """
     Ordered collection of layers.
@@ -211,7 +208,6 @@ class LayerStack:
 # ─────────────────────────────────────────────
 # Base Layer (template for all concrete layers)
 # ─────────────────────────────────────────────
-
 class BaseConfigLayer(LayerProtocol, ABC):
     """
     Template Method pattern:
@@ -250,7 +246,6 @@ class BaseConfigLayer(LayerProtocol, ABC):
 # ─────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────
-
 def _deep_merge(base: ConfigDict, overlay: ConfigDict) -> ConfigDict:
     result = base.copy()
     for k, v in overlay.items():
@@ -262,3 +257,5 @@ def _deep_merge(base: ConfigDict, overlay: ConfigDict) -> ConfigDict:
         else:
             result[k] = v
     return result
+
+

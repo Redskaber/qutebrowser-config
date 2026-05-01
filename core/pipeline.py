@@ -18,6 +18,13 @@ Principles:
   - Immutability: ConfigPacket is effectively immutable (always copied)
 
 Pattern: Chain of Responsibility + Decorator
+
+Strict-mode notes (Pyright):
+  - Removed unused ``Generic`` and ``Optional`` imports.
+  - ``_deep_merge`` annotated with explicit ``Dict[str, Any]`` signatures
+    to avoid ``dict[Unknown, Unknown]`` inference.
+  - ``TransformStage`` / ``ValidateStage`` use fully-typed ``Callable``
+    parameters.
 """
 
 from __future__ import annotations
@@ -26,7 +33,7 @@ import functools
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, TypeVar
+from typing import Any, Callable, Dict, Iterator, List, TypeVar, cast
 
 logger = logging.getLogger("qute.pipeline")
 
@@ -37,7 +44,6 @@ ConfigDict = Dict[str, Any]
 # ─────────────────────────────────────────────
 # Domain Types
 # ─────────────────────────────────────────────
-
 @dataclass
 class ConfigPacket:
     """
@@ -51,11 +57,11 @@ class ConfigPacket:
     Use ``replace_data`` in TransformStage when the transform produces a
     completely new key-set (e.g. key renaming).
     """
-    source:   str                         # origin label, e.g. "layer:base"
-    data:     ConfigDict = field(default_factory=dict)
-    meta:     Dict[str, Any] = field(default_factory=dict)
-    errors:   List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    source:   str            # origin label, e.g. "layer:base"
+    data:     ConfigDict     = field(default_factory=ConfigDict)
+    meta:     Dict[str, Any] = field(default_factory=dict[str, Any])
+    errors:   List[str]      = field(default_factory=list[str])
+    warnings: List[str]      = field(default_factory=list[str])
 
     def with_data(self, extra: ConfigDict) -> "ConfigPacket":
         """Return a new packet with ``extra`` merged *on top of* current data."""
@@ -112,7 +118,6 @@ class ConfigPacket:
 # ─────────────────────────────────────────────
 # Stage Abstraction  (Dependency Inversion)
 # ─────────────────────────────────────────────
-
 class PipeStage(ABC):
     """Base abstraction for a pipeline stage."""
 
@@ -142,7 +147,6 @@ class PipeFilter(PipeStage):
 # ─────────────────────────────────────────────
 # Pipeline Engine
 # ─────────────────────────────────────────────
-
 class Pipeline:
     """
     Composable, ordered pipeline of ``PipeStage`` instances.
@@ -219,7 +223,6 @@ class Pipeline:
 # ─────────────────────────────────────────────
 # Built-in Stages
 # ─────────────────────────────────────────────
-
 class MergeStage(PipeStage):
     """
     Merge a static dict overlay into the packet data.
@@ -296,8 +299,8 @@ class ValidateStage(PipeStage):
     def process(self, packet: ConfigPacket) -> ConfigPacket:
         result = packet
         # Support both flat packets and the nested {settings: {…}} structure.
-        flat   = packet.data
-        nested = packet.data.get("settings", {})
+        flat:   ConfigDict = packet.data
+        nested: ConfigDict = packet.data.get("settings", {})  # type: ignore[assignment]
 
         for key, rule in self._rules.items():
             val = flat.get(key) if key in flat else nested.get(key)
@@ -347,19 +350,19 @@ class LogStage(PipeStage):
 # ─────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────
-
-def _deep_merge(base: dict, overlay: dict) -> dict:
+def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
     """Recursively merge ``overlay`` into ``base``.  Overlay wins."""
-    result = base.copy()
+    result: Dict[str, Any] = base.copy()
     for k, v in overlay.items():
         if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            v = cast(Dict[str, Any], v)
             result[k] = _deep_merge(result[k], v)
         else:
             result[k] = v
     return result
 
 
-def stage(label: str):
+def stage(label: str) -> Callable[[Callable[[ConfigDict], ConfigDict]], Callable[[], TransformStage]]:
     """Decorator: wrap a plain function as a named ``TransformStage`` factory."""
     def decorator(fn: Callable[[ConfigDict], ConfigDict]) -> Callable[[], TransformStage]:
         @functools.wraps(fn)
@@ -367,3 +370,5 @@ def stage(label: str):
             return TransformStage(fn, label=label)
         return factory
     return decorator
+
+

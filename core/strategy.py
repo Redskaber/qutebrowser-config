@@ -14,15 +14,21 @@ Principles:
   - Data-Driven: policy rules expressed as data, not code
 
 Patterns: Strategy, Policy, Registry, Chain of Responsibility
+
+Strict-mode notes (Pyright):
+  - Removed unused ``field`` and ``Callable`` imports.
+  - ``_recursive_merge`` uses ``Dict[str, Any]`` instead of bare ``dict``.
+  - ``all_decisions`` return type is fully annotated.
+  - ``PolicyChain.__init__`` has an explicit ``-> None`` return type.
 """
 
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Callable, Dict, Generic, List, Optional, Tuple, TypeVar
+from typing import Any, Dict, Generic, List, Optional, Tuple, TypeVar, cast
 
 logger = logging.getLogger("qute.strategy")
 
@@ -33,7 +39,6 @@ ConfigDict = Dict[str, Any]
 # ─────────────────────────────────────────────
 # Strategy Abstraction
 # ─────────────────────────────────────────────
-
 class Strategy(ABC, Generic[T]):
     """Base strategy interface."""
     name: str = "unnamed"
@@ -56,7 +61,7 @@ class StrategyRegistry(Generic[T]):
     Supports fallback and priority-based selection.
     """
 
-    def __init__(self, default: Optional[Strategy[T]] = None):
+    def __init__(self, default: Optional[Strategy[T]] = None) -> None:
         self._strategies: Dict[str, Strategy[T]] = {}
         self._default = default
 
@@ -91,7 +96,6 @@ class StrategyRegistry(Generic[T]):
 # ─────────────────────────────────────────────
 # Policy System
 # ─────────────────────────────────────────────
-
 class PolicyAction(Enum):
     ALLOW  = auto()
     DENY   = auto()
@@ -131,7 +135,7 @@ class PolicyChain:
     Stops at first non-None decision or returns ALLOW by default.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._policies: List[Policy] = []
 
     def add(self, policy: Policy) -> "PolicyChain":
@@ -150,9 +154,14 @@ class PolicyChain:
                 return decision
         return PolicyDecision(action=PolicyAction.ALLOW, reason="no policy matched")
 
-    def all_decisions(self, key: str, value: Any, context: ConfigDict) -> List[Tuple[Policy, PolicyDecision]]:
+    def all_decisions(
+        self,
+        key: str,
+        value: Any,
+        context: ConfigDict,
+    ) -> List[Tuple[Policy, PolicyDecision]]:
         """Non-short-circuit: collect all applicable decisions."""
-        results = []
+        results: List[Tuple[Policy, PolicyDecision]] = []
         for policy in self._policies:
             d = policy.evaluate(key, value, context)
             if d is not None:
@@ -163,13 +172,12 @@ class PolicyChain:
 # ─────────────────────────────────────────────
 # Concrete Policies
 # ─────────────────────────────────────────────
-
 class ReadOnlyPolicy(Policy):
     """Prevent certain keys from being overridden."""
     name = "readonly"
     priority = 10
 
-    def __init__(self, protected_keys: List[str]):
+    def __init__(self, protected_keys: List[str]) -> None:
         self._protected = set(protected_keys)
 
     def evaluate(self, key: str, value: Any, context: ConfigDict) -> Optional[PolicyDecision]:
@@ -186,7 +194,7 @@ class TypeEnforcePolicy(Policy):
     name = "type_enforce"
     priority = 20
 
-    def __init__(self, type_map: Dict[str, type]):
+    def __init__(self, type_map: Dict[str, type]) -> None:
         self._types = type_map
 
     def evaluate(self, key: str, value: Any, context: ConfigDict) -> Optional[PolicyDecision]:
@@ -204,7 +212,7 @@ class RangePolicy(Policy):
     name = "range"
     priority = 25
 
-    def __init__(self, ranges: Dict[str, Tuple[Any, Any]]):
+    def __init__(self, ranges: Dict[str, Tuple[Any, Any]]) -> None:
         self._ranges = ranges
 
     def evaluate(self, key: str, value: Any, context: ConfigDict) -> Optional[PolicyDecision]:
@@ -225,7 +233,7 @@ class AllowlistPolicy(Policy):
     name = "allowlist"
     priority = 5
 
-    def __init__(self, allowed_keys: List[str], strict: bool = False):
+    def __init__(self, allowed_keys: List[str], strict: bool = False) -> None:
         self._allowed = set(allowed_keys)
         self._strict = strict
 
@@ -239,37 +247,46 @@ class AllowlistPolicy(Policy):
 # ─────────────────────────────────────────────
 # Concrete Strategies
 # ─────────────────────────────────────────────
-
 class MergeStrategy(Strategy[ConfigDict]):
     """Different merge algorithms as strategies."""
 
     class LastWins(Strategy[ConfigDict]):
         name = "last_wins"
         def apply(self, context: ConfigDict) -> ConfigDict:
-            base = context.get("base", {})
-            overlay = context.get("overlay", {})
+            base:    ConfigDict = context.get("base", {})    # type: ignore[assignment]
+            overlay: ConfigDict = context.get("overlay", {}) # type: ignore[assignment]
             return {**base, **overlay}
 
     class FirstWins(Strategy[ConfigDict]):
         name = "first_wins"
         def apply(self, context: ConfigDict) -> ConfigDict:
-            base = context.get("base", {})
-            overlay = context.get("overlay", {})
+            base:    ConfigDict = context.get("base", {})    # type: ignore[assignment]
+            overlay: ConfigDict = context.get("overlay", {}) # type: ignore[assignment]
             return {**overlay, **base}
 
     class DeepMerge(Strategy[ConfigDict]):
         name = "deep_merge"
         def apply(self, context: ConfigDict) -> ConfigDict:
-            base = context.get("base", {})
-            overlay = context.get("overlay", {})
+            base:    ConfigDict = context.get("base", {})    # type: ignore[assignment]
+            overlay: ConfigDict = context.get("overlay", {}) # type: ignore[assignment]
             return _recursive_merge(base, overlay)
 
+    # MergeStrategy itself is abstract; its inner classes are the concrete ones.
+    def apply(self, context: ConfigDict) -> ConfigDict:
+        raise NotImplementedError("Use MergeStrategy.LastWins, .FirstWins, or .DeepMerge")
 
-def _recursive_merge(base: dict, overlay: dict) -> dict:
-    result = base.copy()
+
+def _recursive_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge *overlay* into *base*.  Overlay wins on conflicts."""
+    result: Dict[str, Any] = base.copy()
     for k, v in overlay.items():
-        if isinstance(result.get(k), dict) and isinstance(v, dict):
-            result[k] = _recursive_merge(result[k], v)
+        existing = result.get(k)
+        if isinstance(existing, dict) and isinstance(v, dict):
+            existing = cast(Dict[str, Any], existing)
+            v = cast(Dict[str, Any], v)
+            result[k] = _recursive_merge(existing, v)
         else:
             result[k] = v
     return result
+
+
