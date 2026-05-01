@@ -34,6 +34,7 @@ class BaseLayer(BaseConfigLayer):
     def _settings(self) -> ConfigDict:
         return {
             # ── Editor ──────────────────────────────────────────
+            # Baseline: alacritty + nvim.  Override in user.py (priority=90).
             "editor.command": ["alacritty", "-e", "nvim", "{}"],
 
             # ── Downloads ───────────────────────────────────────
@@ -124,7 +125,6 @@ class BaseLayer(BaseConfigLayer):
             "hints.auto_follow_timeout": 0,
             "hints.border": "1px solid #E3C39D",
             "hints.chars": "asdfghjklqwertyuiopzxcvbnm",
-            "hints.find_implementation": "python",
             "hints.hide_unmatched_rapid_hints": True,
             "hints.leave_on_load": False,
             "hints.min_chars": 1,

@@ -246,15 +246,57 @@ class BaseConfigLayer(LayerProtocol, ABC):
 # ─────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────
-def _deep_merge(base: ConfigDict, overlay: ConfigDict) -> ConfigDict:
+def _deep_merge(
+    base: ConfigDict,
+    overlay: ConfigDict,
+    *,
+    _accumulate_list_keys: frozenset[str] = frozenset({"keybindings"}),
+    _depth: int = 0,
+) -> ConfigDict:
+    """
+    Merge *overlay* on top of *base*.
+
+    Merge semantics by value type:
+      - dict  → recurse (deep merge)
+      - list  → depends on the *key*:
+                  • top-level "keybindings"  → accumulate (extend)
+                    Rationale: every layer contributes its own bindings;
+                    they are all additive.
+                  • everything else (e.g. "editor.command", "url.start_pages")
+                    → replace (later layer wins)
+                    Rationale: these are scalar-like config values expressed
+                    as lists; the higher-priority layer's choice must win
+                    outright, not concatenate with lower layers.
+      - scalar → replace (later layer wins)
+
+    The *_depth* guard ensures the accumulate-list-keys rule only fires at
+    the top merge level (where "keybindings" lives alongside "settings" and
+    "aliases").  Inside "settings" we are always at depth ≥ 1, so list
+    values there are always replaced.
+    """
     result = base.copy()
     for k, v in overlay.items():
         if k in result and isinstance(result[k], dict) and isinstance(v, dict):
             v = cast(ConfigDict, v)
-            result[k] = _deep_merge(result[k], v)
-        elif k in result and isinstance(result[k], list) and isinstance(v, list):
-            result[k] = result[k] + v   # lists: extend (for keybindings)
+            result[k] = _deep_merge(
+                result[k], v,
+                _accumulate_list_keys=_accumulate_list_keys,
+                _depth=_depth + 1,
+            )
+        elif (
+            _depth == 0
+            and k in _accumulate_list_keys
+            and k in result
+            and isinstance(result[k], list)
+            and isinstance(v, list)
+        ):
+            # Top-level accumulate keys (e.g. "keybindings"): extend so all
+            # layers' bindings are collected.
+            result[k] = result[k] + v
         else:
+            # Default: replace.  Covers scalars AND list-valued settings
+            # (e.g. editor.command, url.start_pages) where the higher-
+            # priority layer must win outright.
             result[k] = v
     return result
 
