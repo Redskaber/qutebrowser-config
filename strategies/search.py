@@ -16,16 +16,13 @@ so custom sets only need to declare their *additions* or *overrides*.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, cast
+from typing import Dict, cast
 
 from core.strategy import ConfigDict, Strategy, StrategyRegistry
 
 logger = logging.getLogger("qute.strategies.search")
 
 SearchEngineMap = Dict[str, str]
-# Public alias used in __init__.py exports
-SearchEngineSet = SearchEngineMap
-
 
 # ─────────────────────────────────────────────
 # Base Engine Set (always present)

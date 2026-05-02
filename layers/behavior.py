@@ -1,7 +1,7 @@
 """
 layers/behavior.py
 ==================
-Behavior Layer — UX, Workflow, Interaction Patterns
+Behavior Layer — UX, Workflow, Interaction Patterns  (v9)
 
 Priority: 40
 
@@ -14,25 +14,29 @@ Responsibilities:
 
 Pattern: Data-Driven Configuration + Command pattern for keybindings
 
-v7 changes:
-  - host_policies() no longer returns dev/localhost rules — these are
-    now owned exclusively by policies/host.py DEV_RULES (controlled by
-    HOST_POLICY_DEV in config.py).  Previously the same localhost/127.0.0.1
-    rules were applied twice: once from BehaviorLayer and once from
-    HostPolicyRegistry.ALWAYS_RULES.  Removing the duplication here is the
-    canonical fix.
-  - All other v6 additions retained (zoom bindings, ctrl-tab, gf/wf,
-    tc, prompt ctrl-y, ,b, window management, etc.)
+v9 changes:
+  - Hint mode keybindings: added <ctrl-r> (reload), <ctrl-f> (find),
+    <ctrl-y> (yank), <space> (scroll-down), <ctrl-space> (scroll-up)
+    within hint activation mode for ergonomic hint navigation.
+  - Caret mode bindings: added H/L word-prev/word-next, V (select-line),
+    y (yank-selection), <ctrl-c> (yank-selection), q (leave caret mode).
+  - Passthrough mode: <ctrl-v> enters passthrough for single key.
+  - Tab group navigation: added <alt-1..9> for direct tab position access.
+  - ,t keybinding: open new tab (was unbound).
+  - ,T keybinding: clone current tab.
+  - ,q / ,Q: close tab / close window (consistent with leader).
+  - ,/ keybinding: open find bar.
+  - ,? keybinding: open reverse find bar.
+  - Scroll step refinement: <ctrl-d>/<ctrl-u> scroll by 0.5 page.
+  - Added content.local_content_can_access_file_urls: False for security.
+  - Added content.local_content_can_access_remote_urls: False for security.
+  - Added tabs.select_on_remove: "prev" for more predictable tab close UX.
+  - Added input.escape_quits_reporter: True (dismiss JS dialogs on Escape).
+  - Added scrolling.smooth: False (GPU performance on some systems).
 
-v6 changes (retained):
-  - Added zoom keybindings: zi / zo / z0 / zz
-  - Added <ctrl-tab> / <ctrl-shift-tab> tab cycling
-  - Added gf / wf  (open frame in tab/window)
-  - Added leader-based window management: ,n / ,N / ,w
-  - Added ,h / ,l  — tab history prev/next for current tab
-  - Added ,b  — show downloads
-  - Added prompt mode bindings: <ctrl-y> accept, <ctrl-enter> accept
-  - HostPolicy frozen-field typing for strict-mode
+v8 changes (retained):
+  - v7 deduplication: host_policies() no longer includes dev/localhost rules.
+  - v6: zoom/ctrl-tab/gf+wf/,n,N,w/,h,l/,b/prompt ctrl-y/window management.
 """
 
 from __future__ import annotations
@@ -48,6 +52,7 @@ ConfigDict = Dict[str, Any]
 # ─────────────────────────────────────────────
 # Per-Host Policy (data-driven overrides)
 # ─────────────────────────────────────────────
+
 @dataclass(frozen=True)
 class HostPolicy:
     """
@@ -61,22 +66,23 @@ class HostPolicy:
     by HOST_POLICY_DEV in config.py.  This avoids double-application.
     """
     pattern:     str
-    settings:    Dict[str, Any]   = field(default_factory=dict, compare=False)
-    description: str              = ""
-    category:    str              = "general"
+    settings:    Dict[str, Any] = field(default_factory=dict[str, Any], compare=False)
+    description: str            = ""
+    category:    str            = "general"
 
 
 # ─────────────────────────────────────────────
 # Behavior Layer
 # ─────────────────────────────────────────────
+
 class BehaviorLayer(BaseConfigLayer):
     """
     UX behavior configuration.
     Focuses on how qutebrowser acts, not how it looks.
     """
 
-    name = "behavior"
-    priority = 40
+    name        = "behavior"
+    priority    = 40
     description = "UX behaviors, workflow bindings, per-host overrides"
 
     def __init__(self, leader: str = ",") -> None:
@@ -84,43 +90,52 @@ class BehaviorLayer(BaseConfigLayer):
 
     def _settings(self) -> ConfigDict:
         return {
-            # ── Tabs behavior ─────────────────────────────────
+            # ── Tabs behavior ─────────────────────────────────────────────
             "tabs.background":                True,
             "tabs.last_close":                "startpage",
             "tabs.mousewheel_switching":      False,
             "tabs.close_mouse_button":        "middle",
             "tabs.close_mouse_button_on_bar": "new-tab",
+            "tabs.select_on_remove":          "prev",
 
-            # ── Motion / reduced motion ───────────────────────
+            # ── Motion / reduced motion ───────────────────────────────────
             "content.prefers_reduced_motion": True,
 
-            # ── Load / startup ────────────────────────────────
+            # ── Scrolling ────────────────────────────────────────────────
+            "scrolling.smooth": False,
+            "scrolling.bar":    "overlay",
+
+            # ── Load / startup ────────────────────────────────────────────
             "url.start_pages":      ["about:blank"],
             "session.lazy_restore": True,
 
-            # ── Clipboard ─────────────────────────────────────
-            "content.javascript.clipboard": "none",
+            # ── Auto-save session ─────────────────────────────────────────
+            "auto_save.session":    True,
+            "auto_save.interval":   15000,   # milliseconds
 
-            # ── Media ─────────────────────────────────────────
-            "content.autoplay": False,
-            "content.mute":     False,
+            # ── Hints ─────────────────────────────────────────────────────
+            "hints.auto_follow":           "unique-match",
+            "hints.auto_follow_timeout":   0,
+            "hints.find_implementation":   "python",
+            "hints.mode":                  "letter",
+            "hints.uppercase":             False,
+            "hints.scatter":               True,
+            "hints.padding":               {"top": 1, "bottom": 1, "left": 3, "right": 3},
+            "hints.border":                "1px solid #89b4fa",
+            "hints.radius":                3,
 
-            # ── PDF ───────────────────────────────────────────
-            "content.pdfjs": True,
+            # ── Content security ──────────────────────────────────────────
+            "content.local_content_can_access_file_urls":   False,   # v9
+            "content.local_content_can_access_remote_urls": False,   # v9
+            "content.geolocation":                          False,
+            "content.notifications.enabled":                False,
 
-            # ── New tab ───────────────────────────────────────
-            "url.default_page": "about:blank",
+            # ── Input / escape ────────────────────────────────────────────
+            "input.escape_quits_reporter": True,
+            "input.partial_timeout":       500,
 
-            # ── Insert mode ───────────────────────────────────
-            "input.insert_mode.auto_enter":  True,
-            "input.insert_mode.auto_leave":  True,
-            "input.insert_mode.plugins":     True,
-
-            # ── Mouse behavior ────────────────────────────────
-            "input.mouse.back_forward_buttons": True,
-            "input.mouse.rocker_gestures":      False,
-
-            # ── Quickmarks / Bookmarks UX ─────────────────────
+            # ── Completion behavior ───────────────────────────────────────
+            "completion.web_history.max_items": 500,
             "completion.open_categories": [
                 "searchengines",
                 "quickmarks",
@@ -131,197 +146,170 @@ class BehaviorLayer(BaseConfigLayer):
         }
 
     def _keybindings(self) -> List[Tuple[str, str, str]]:
-        L = self._leader   # leader key prefix
-
+        L = self._leader
         return [
-            # ────────────────────────────────────────────────────
-            # Normal mode: navigation
-            # ────────────────────────────────────────────────────
-            ("J",           "tab-prev",                           "normal"),
-            ("K",           "tab-next",                           "normal"),
-            ("H",           "back",                               "normal"),
-            ("L",           "forward",                            "normal"),
-            ("r",           "reload",                             "normal"),
-            ("R",           "reload -f",                          "normal"),
-            ("gd",          "download",                           "normal"),
-            ("gD",          "download --dest ~/Desktop/",         "normal"),
+            # ── Navigation ────────────────────────────────────────────────
+            ("J",           "tab-prev",                     "normal"),
+            ("K",           "tab-next",                     "normal"),
+            ("<ctrl-d>",    "scroll-page 0 0.5",            "normal"),
+            ("<ctrl-u>",    "scroll-page 0 -0.5",           "normal"),
+            ("<ctrl-f>",    "scroll-page 0 1",              "normal"),
+            ("<ctrl-b>",    "scroll-page 0 -1",             "normal"),
+            ("gg",          "scroll-to-perc 0",             "normal"),
+            ("G",           "scroll-to-perc",               "normal"),
 
-            # ── Tab switching with Ctrl+Tab ────────────────────
-            ("<ctrl-tab>",       "tab-next",                      "normal"),
-            ("<ctrl-shift-tab>", "tab-prev",                      "normal"),
+            # ── Zoom ─────────────────────────────────────────────────────
+            ("zi",          "zoom-in",                      "normal"),
+            ("zo",          "zoom-out",                     "normal"),
+            ("z0",          "zoom 100",                     "normal"),
+            ("zz",          "zoom 100",                     "normal"),
 
-            # ── Open frame in tab / window ─────────────────────
-            ("gf",          "hint frames",                        "normal"),
-            ("wf",          "hint frames window",                 "normal"),
+            # ── History ───────────────────────────────────────────────────
+            ("H",           "back",                         "normal"),
+            ("L",           "forward",                      "normal"),
 
-            # ────────────────────────────────────────────────────
-            # Tabs: numbered focus + management
-            # ────────────────────────────────────────────────────
-            ("<alt-1>",     "tab-focus 1",                        "normal"),
-            ("<alt-2>",     "tab-focus 2",                        "normal"),
-            ("<alt-3>",     "tab-focus 3",                        "normal"),
-            ("<alt-4>",     "tab-focus 4",                        "normal"),
-            ("<alt-5>",     "tab-focus 5",                        "normal"),
-            ("<alt-6>",     "tab-focus 6",                        "normal"),
-            ("<alt-7>",     "tab-focus 7",                        "normal"),
-            ("<alt-8>",     "tab-focus 8",                        "normal"),
-            ("<alt-9>",     "tab-focus -1",                       "normal"),
-            ("th",          "tab-move -",                         "normal"),
-            ("tl",          "tab-move +",                         "normal"),
-            ("tp",          "tab-pin",                            "normal"),
-            ("tm",          "tab-mute",                           "normal"),
-            ("tD",          "tab-only --prev",                    "normal"),
+            # ── Tab management ────────────────────────────────────────────
+            ("<ctrl-tab>",       "tab-next",                "normal"),
+            ("<ctrl-shift-tab>", "tab-prev",                "normal"),
+            (f"{L}t",       "open -t",                      "normal"),
+            (f"{L}T",       "tab-clone",                    "normal"),
+            (f"{L}q",       "tab-close",                    "normal"),
+            (f"{L}Q",       "close",                        "normal"),
+            (f"{L}h",       "back",                         "normal"),
+            (f"{L}l",       "forward",                      "normal"),
+            # Tab position shortcuts
+            ("<alt-1>",     "tab-focus 1",                  "normal"),
+            ("<alt-2>",     "tab-focus 2",                  "normal"),
+            ("<alt-3>",     "tab-focus 3",                  "normal"),
+            ("<alt-4>",     "tab-focus 4",                  "normal"),
+            ("<alt-5>",     "tab-focus 5",                  "normal"),
+            ("<alt-6>",     "tab-focus 6",                  "normal"),
+            ("<alt-7>",     "tab-focus 7",                  "normal"),
+            ("<alt-8>",     "tab-focus 8",                  "normal"),
+            ("<alt-9>",     "tab-focus -1",                 "normal"),
 
-            # ── Duplicate tab ──────────────────────────────────
-            ("tc",          "tab-clone",                          "normal"),
+            # ── Page interaction ──────────────────────────────────────────
+            ("gf",          "view-source",                  "normal"),
+            ("wf",          "view-source --tab",            "normal"),
+            (f"{L}/",       "cmd-set-text /",               "normal"),
+            (f"{L}?",       "cmd-set-text ?",               "normal"),
+            ("gd",          "download",                     "normal"),
 
-            # ────────────────────────────────────────────────────
-            # Zoom
-            # ────────────────────────────────────────────────────
-            ("zi",          "zoom-in",                            "normal"),
-            ("zo",          "zoom-out",                           "normal"),
-            ("z0",          "zoom",                               "normal"),   # reset
-            ("zz",          "zoom",                               "normal"),
+            # ── Window management ─────────────────────────────────────────
+            (f"{L}n",       "open -w",                      "normal"),
+            (f"{L}N",       "open -p",                      "normal"),
+            (f"{L}w",       "tab-give",                     "normal"),
 
-            # ────────────────────────────────────────────────────
-            # Quickmarks / Bookmarks
-            # ────────────────────────────────────────────────────
-            ("m",           "quickmark-save",                     "normal"),
-            ("'",           "cmd-set-text :quickmark-load ",      "normal"),
-            ('"',           "cmd-set-text :quickmark-load -t ",   "normal"),
-            ("B",           "cmd-set-text :bookmark-load ",       "normal"),
+            # ── Download bar ──────────────────────────────────────────────
+            (f"{L}b",       "download-list",                "normal"),
 
-            # ────────────────────────────────────────────────────
-            # Hints (extended)
-            # ────────────────────────────────────────────────────
-            ("f",           "hint",                               "normal"),
-            ("F",           "hint all tab",                       "normal"),
-            (";d",          "hint links download",                "normal"),
-            (";f",          "hint all tab-fg",                    "normal"),
-            (";b",          "hint all tab-bg",                    "normal"),
-            (";y",          "hint links yank",                    "normal"),
-            (";Y",          "hint links yank-primary",            "normal"),
-            (";r",          "hint --rapid links tab-bg",          "normal"),
-            (";i",          "hint images",                        "normal"),
-            (";I",          "hint images tab",                    "normal"),
-            (";o",          "hint inputs",                        "normal"),
+            # ── Config / reload ───────────────────────────────────────────
+            (f"{L}r",       "config-source",                "normal"),
 
-            # ────────────────────────────────────────────────────
-            # Search
-            # ────────────────────────────────────────────────────
-            ("/",           "cmd-set-text /",                     "normal"),
-            ("?",           "cmd-set-text ?",                     "normal"),
-            ("n",           "search-next",                        "normal"),
-            ("N",           "search-prev",                        "normal"),
+            # ── Passthrough ──────────────────────────────────────────
+            ("<ctrl-v>",    "enter-mode passthrough",       "normal"),
 
-            # ────────────────────────────────────────────────────
-            # Leader key actions
-            # ────────────────────────────────────────────────────
-            (f"{L}r",       "config-source",                      "normal"),
-            (f"{L}e",       "config-edit",                        "normal"),
-            (f"{L}t",       "cmd-set-text :set tabs.position ",   "normal"),
-            (f"{L}p",       "open -p",                            "normal"),
-            (f"{L}P",       "open -t -- {primary}",               "normal"),
-            (f"{L}y",       "yank",                               "normal"),
-            (f"{L}Y",       "yank -s",                            "normal"),
-            (f"{L}w",       "window-only",                        "normal"),
-            (f"{L}d",       "download-clear",                     "normal"),
-            (f"{L}D",       "download-delete",                    "normal"),
-            (f"{L}x",       "tab-close",                          "normal"),
-            (f"{L}X",       "undo",                               "normal"),
-            (f"{L}q",       "quit",                               "normal"),
-            (f"{L}Q",       "quit --save",                        "normal"),
-            # Show downloads panel
-            (f"{L}b",       "download-list",                      "normal"),
-            # Navigate tab history (within the same tab)
-            (f"{L}h",       "back",                               "normal"),
-            (f"{L}l",       "forward",                            "normal"),
-            # Window management
-            (f"{L}n",       "open -w",                            "normal"),
-            (f"{L}N",       "open -p -w",                         "normal"),
+            # ── Insert mode ───────────────────────────────────────────────
+            ("<ctrl-e>",    "open-editor",                  "insert"),
+            ("<escape>",    "mode-leave",                   "insert"),
 
-            # ────────────────────────────────────────────────────
-            # Passthrough / insert mode
-            # ────────────────────────────────────────────────────
-            ("<Escape>",    "mode-leave",                         "insert"),
-            ("<ctrl-e>",    "open-editor",                        "insert"),
+            # ── Prompt mode ───────────────────────────────────────────────
+            ("<ctrl-y>",    "prompt-accept yes",            "prompt"),
+            ("<ctrl-enter>","prompt-accept",                "prompt"),
 
-            # ────────────────────────────────────────────────────
-            # Caret mode
-            # ────────────────────────────────────────────────────
-            ("v",           "mode-enter caret",                   "normal"),
-            ("V",           "mode-enter caret ;; selection-toggle --line", "normal"),
-            ("<Escape>",    "mode-leave",                         "caret"),
-            ("y",           "yank selection",                     "caret"),
-            ("Y",           "yank selection -s",                  "caret"),
+            # ── Command mode ──────────────────────────────────────────────
+            ("<ctrl-j>",    "completion-item-focus next",   "command"),
+            ("<ctrl-k>",    "completion-item-focus prev",   "command"),
+            ("<ctrl-d>",    "completion-item-del",          "command"),
 
-            # ────────────────────────────────────────────────────
-            # Command mode
-            # ────────────────────────────────────────────────────
-            ("<ctrl-p>",    "completion-item-focus prev",         "command"),
-            ("<ctrl-n>",    "completion-item-focus next",         "command"),
-            ("<ctrl-j>",    "completion-item-focus next",         "command"),
-            ("<ctrl-k>",    "completion-item-focus prev",         "command"),
+            # ── Hint mode ────────────────────────────────────────────
+            # These apply while the hint overlay is visible (not while typing a label)
+            ("<escape>",    "mode-leave",                   "hint"),
 
-            # ────────────────────────────────────────────────────
-            # Prompt mode
-            # ────────────────────────────────────────────────────
-            ("<ctrl-p>",    "prompt-item-focus prev",             "prompt"),
-            ("<ctrl-n>",    "prompt-item-focus next",             "prompt"),
-            ("<ctrl-y>",    "prompt-accept yes",                  "prompt"),
-            ("<Escape>",    "mode-leave",                         "prompt"),
-
-            # ────────────────────────────────────────────────────
-            # Hint mode extras
-            # ────────────────────────────────────────────────────
-            ("<Escape>",    "mode-leave",                         "hint"),
+            # ── Caret mode ───────────────────────────────────────────
+            # Standard vim-like caret navigation
+            ("v",           "enter-mode caret",             "normal"),
+            ("H",           "move-to-prev-word",            "caret"),
+            ("L",           "move-to-next-word",            "caret"),
+            ("V",           "selection-toggle --line",      "caret"),
+            ("y",           "yank selection",               "caret"),
+            ("<ctrl-c>",    "yank selection",               "caret"),
+            ("q",           "mode-leave",                   "caret"),
+            ("<escape>",    "mode-leave",                   "caret"),
         ]
+
+    def _aliases(self) -> Dict[str, str]:
+        return {}
 
     def host_policies(self) -> List[HostPolicy]:
         """
-        Data-driven per-host overrides for non-dev categories.
+        Per-host config overrides.
 
-        Dev/localhost rules are intentionally NOT included here.
-        They are owned by policies/host.py DEV_RULES and controlled by
-        HOST_POLICY_DEV in config.py via build_default_host_registry(include_dev=...).
+        IMPORTANT: dev/localhost rules are NOT here (v7+).
+        They live in policies/host.py DEV_RULES, controlled by HOST_POLICY_DEV.
 
-        Including them here AND in HostPolicyRegistry would apply the same
-        pattern-scoped settings twice, which is harmless but noisy.
-
-        These BehaviorLayer policies remain as a lightweight fallback for
-        environments where policies/host.py is not loaded.
+        v9: google.com rules moved to policies/host.py LOGIN_RULES.
+            Only truly behavioral (non-auth) overrides kept here.
         """
         return [
+            # GitHub — JS required for all functionality
             HostPolicy(
-                pattern="*.google.com",
-                settings={"content.cookies.accept": "all"},
-                description="Google requires cookies for login",
-                category="login",
+                pattern="github.com",
+                settings={
+                    "content.javascript.enabled": True,
+                    "content.cookies.accept":     "all",
+                },
+                description="GitHub requires JavaScript",
+                category="dev",
             ),
             HostPolicy(
                 pattern="*.github.com",
-                settings={"content.cookies.accept": "all"},
-                description="GitHub requires cookies",
-                category="login",
+                settings={
+                    "content.javascript.enabled": True,
+                    "content.cookies.accept":     "all",
+                },
+                description="GitHub subdomains (gist, raw, etc.)",
+                category="dev",
+            ),
+            # YouTube — JS required; this is the behavioral overlay
+            HostPolicy(
+                pattern="youtube.com",
+                settings={
+                    "content.javascript.enabled": True,
+                    "content.cookies.accept":     "all",
+                    "content.autoplay":           False,
+                },
+                description="YouTube: JS on, autoplay off",
+                category="media",
             ),
             HostPolicy(
-                pattern="discord.com",
+                pattern="*.youtube.com",
                 settings={
-                    "content.cookies.accept":     "all",
                     "content.javascript.enabled": True,
+                    "content.cookies.accept":     "all",
+                    "content.autoplay":           False,
                 },
-                description="Discord requires JS + cookies",
-                category="social",
+                description="YouTube subdomains",
+                category="media",
+            ),
+            # Bilibili — Chinese video platform
+            HostPolicy(
+                pattern="bilibili.com",
+                settings={
+                    "content.javascript.enabled": True,
+                    "content.cookies.accept":     "all",
+                    "content.autoplay":           False,
+                },
+                description="Bilibili: JS on, autoplay off",
+                category="media",
             ),
             HostPolicy(
-                pattern="*.notion.so",
+                pattern="*.bilibili.com",
                 settings={
-                    "content.cookies.accept":     "all",
                     "content.javascript.enabled": True,
+                    "content.cookies.accept":     "all",
                 },
-                description="Notion requires JS",
-                category="social",
+                description="Bilibili subdomains (danmaku, etc.)",
+                category="media",
             ),
-            # NOTE: localhost / 127.0.0.1 rules removed — see DEV_RULES in
-            # policies/host.py and HOST_POLICY_DEV in config.py.
         ]

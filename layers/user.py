@@ -35,6 +35,16 @@ search_engines merge semantics:
   Set search_engines_merge=False to REPLACE the entire engine map entirely
   (UserLayer writes the full set; lower-layer engines are discarded).
 
+v9 changes:
+  - Added ``tabs_position`` constructor parameter: one of "top", "bottom",
+    "left", "right". None = keep default (AppearanceLayer / base).
+    Maps to ``tabs.position``.
+  - Added ``statusbar_show`` constructor parameter: one of "always", "never",
+    "in-mode". None = keep default.
+    Maps to ``statusbar.show``.
+  - Both params are validated against their allowed value sets; invalid values
+    log a warning and are silently skipped (no crash, no health error).
+
 v8 changes:
   - Added font_family, font_size, font_size_web constructor parameters so
     font overrides no longer require using the extra_settings escape hatch.
@@ -69,7 +79,7 @@ Strict-mode: all params typed; injected collections are defensively copied.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, FrozenSet
 
 from core.layer import BaseConfigLayer
 
@@ -126,6 +136,16 @@ class UserLayer(BaseConfigLayer):
                              only the engines listed here will exist.
         spellcheck_langs:    Language codes for spellcheck, e.g. ["en-US"].
                              None → keep base default.
+        font_family:         Override font family (e.g. "JetBrainsMono Nerd Font").
+                             None → keep AppearanceLayer/theme default.
+        font_size:           Override UI chrome font size string (e.g. "10pt").
+                             None → keep theme default.
+        font_size_web:       Override web content font size (e.g. "16px", "18").
+                             None → keep theme default.
+        tabs_position:       Tab bar position: "top" | "bottom" | "left" | "right".
+                             None → keep base default.
+        statusbar_show:      Statusbar visibility: "always" | "never" | "in-mode".
+                             None → keep base default.
         extra_settings:      Arbitrary additional qutebrowser settings (escape hatch).
         extra_bindings:      Arbitrary additional keybindings [(key, cmd, mode), ...].
         extra_aliases:       Arbitrary additional command aliases {name: command}.
@@ -135,6 +155,9 @@ class UserLayer(BaseConfigLayer):
     name        = "user"
     priority    = 90
     description = "Personal overrides — highest priority; driven by config.py"
+
+    _VALID_TABS_POSITIONS:  FrozenSet[str] = frozenset({"top", "bottom", "left", "right"})
+    _VALID_STATUSBAR_MODES: FrozenSet[str] = frozenset({"always", "never", "in-mode"})
 
     def __init__(
         self,
@@ -149,23 +172,30 @@ class UserLayer(BaseConfigLayer):
         font_family:          Optional[str]         = None,
         font_size:            Optional[str]         = None,
         font_size_web:        Optional[str]         = None,
+        tabs_position:        Optional[str]         = None,
+        statusbar_show:       Optional[str]         = None,
         extra_settings:       Optional[ConfigDict]  = None,
         extra_bindings:       Optional[BindingList] = None,
         extra_aliases:        Optional[ConfigDict]  = None,
         github_username:      str                   = "redskaber",
     ) -> None:
         self._leader               = leader
-        # v8: skip empty editor list — EditorCommandCheck would flag it as ERROR
         self._editor               = editor if editor else None
         self._start_pages          = start_pages
         self._zoom                 = zoom
         self._proxy                = self._validate_proxy(proxy)
-        self._search_engines       = dict(search_engines)   if search_engines   else None
+        self._search_engines       = dict(search_engines)   if search_engines    else None
         self._search_engines_merge = search_engines_merge
-        self._spellcheck_langs     = list(spellcheck_langs) if spellcheck_langs else None
+        self._spellcheck_langs     = list(spellcheck_langs) if spellcheck_langs  else None
         self._font_family          = font_family.strip()    if font_family       else None
         self._font_size            = font_size.strip()      if font_size         else None
         self._font_size_web        = font_size_web.strip()  if font_size_web     else None
+        self._tabs_position  = self._validate_choice(
+            tabs_position, self._VALID_TABS_POSITIONS, "tabs_position"
+        )
+        self._statusbar_show = self._validate_choice(
+            statusbar_show, self._VALID_STATUSBAR_MODES, "statusbar_show"
+        )
         self._extra_settings       = dict(extra_settings)   if extra_settings   else {}
         self._extra_bindings       = list(extra_bindings)   if extra_bindings   else []
         self._extra_aliases        = dict(extra_aliases)    if extra_aliases    else {}
@@ -183,7 +213,7 @@ class UserLayer(BaseConfigLayer):
         """
         if proxy is None:
             return None
-        if not isinstance(proxy, str):
+        if not isinstance(proxy, str): # type: ignore
             raise TypeError(
                 f"[UserLayer] content.proxy must be a str, got {type(proxy).__name__!r}.\n"
                 "  Valid examples: 'socks5://127.0.0.1:7897', 'http://127.0.0.1:7897', "
@@ -202,6 +232,31 @@ class UserLayer(BaseConfigLayer):
                 f"{valid_schemes}."
             )
         return proxy
+
+    @staticmethod
+    def _validate_choice(
+        value: Optional[str],
+        valid: FrozenSet[str],
+        param: str,
+    ) -> Optional[str]:
+        """
+        Validate a string against an allowed set.
+        Returns the value if valid, None (with a logged warning) if not.
+        None input is passed through unchanged.
+        """
+        import logging as _logging
+        _log = _logging.getLogger("qute.layers.user")
+        if value is None:
+            return None
+        v = value.strip().lower()
+        if v not in valid:
+            _log.warning(
+                "[UserLayer] %s=%r is not a valid value — "
+                "expected one of %s; parameter will be ignored.",
+                param, value, sorted(valid),
+            )
+            return None
+        return v
 
     def _settings(self) -> ConfigDict:
         settings: ConfigDict = {}
@@ -266,7 +321,7 @@ class UserLayer(BaseConfigLayer):
         if self._spellcheck_langs is not None:
             settings["spellcheck.languages"] = self._spellcheck_langs
 
-        # ── Font overrides (v8) ───────────────────────────────────────────
+        # ── Font overrides ───────────────────────────────────────────
         # Prefer these over putting fonts in extra_settings — they are
         # validated by FontFamilyCheck and give a clear parameter name.
         #
@@ -286,6 +341,17 @@ class UserLayer(BaseConfigLayer):
                              self._font_size_web, settings["fonts.web.size.default"])
             except ValueError as exc:
                 logger.warning("[UserLayer] font_size_web ignored: %s", exc)
+
+        # ── Layout overrides ─────────────────────────────────────────
+        # First-class params for the two most commonly overridden layout keys.
+        # Both are validated at construction time; invalid values are silently
+        # skipped (logged as warning) — no crash.
+        if self._tabs_position is not None:
+            settings["tabs.position"] = self._tabs_position
+            logger.debug("[UserLayer] tabs_position: %r", self._tabs_position)
+        if self._statusbar_show is not None:
+            settings["statusbar.show"] = self._statusbar_show
+            logger.debug("[UserLayer] statusbar_show: %r", self._statusbar_show)
 
         # ── Extra settings (escape hatch) ─────────────────────────────────
         if self._extra_settings:

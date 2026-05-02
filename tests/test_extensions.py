@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import sys
 import os
+from typing import Any, List
 import unittest
 
 # ── Path setup ───────────────────────────────────────────────────────────────
@@ -112,14 +113,14 @@ class TestProfileStrategy(unittest.TestCase):
             self.assertTrue(len(r.description) > 0, f"{profile.name} has no description")
 
     def test_strategy_resolves_by_name_string(self) -> None:
-        from strategies.profile import build_profile_registry, UnifiedProfile
+        from strategies.profile import build_profile_registry
         from layers.privacy import PrivacyProfile
         registry = build_profile_registry()
         r = registry.apply("unified_profile", {"profile": "SECURE"})
         self.assertEqual(r.privacy_profile, PrivacyProfile.HARDENED)
 
     def test_strategy_fallback_on_unknown_name(self) -> None:
-        from strategies.profile import build_profile_registry, UnifiedProfile
+        from strategies.profile import build_profile_registry
         from layers.privacy import PrivacyProfile
         registry = build_profile_registry()
         # Unknown name should fall back to DAILY → STANDARD + BALANCED
@@ -604,14 +605,101 @@ class TestUserLayerParameterInjection(unittest.TestCase):
         settings = layer.build().get("settings", {})
         self.assertNotIn("editor.command", settings)
 
+    # ── Layout override params (v9) ───────────────────────────────────
+    def test_tabs_position_injected(self) -> None:
+        """tabs_position='left' maps to tabs.position."""
+        from layers.user import UserLayer
+        layer = UserLayer(tabs_position="left")
+        settings = layer.build()["settings"]
+        self.assertEqual(settings["tabs.position"], "left")
+
+    def test_tabs_position_none_not_in_settings(self) -> None:
+        from layers.user import UserLayer
+        layer = UserLayer(tabs_position=None)
+        settings = layer.build().get("settings", {})
+        self.assertNotIn("tabs.position", settings)
+
+    def test_tabs_position_invalid_skipped(self) -> None:
+        """Invalid tabs_position is silently skipped (warning only)."""
+        from layers.user import UserLayer
+        layer = UserLayer(tabs_position="sideways")
+        settings = layer.build().get("settings", {})
+        self.assertNotIn("tabs.position", settings)
+
+    def test_tabs_position_case_normalised(self) -> None:
+        """tabs_position='TOP' is accepted and normalised to lowercase."""
+        from layers.user import UserLayer
+        layer = UserLayer(tabs_position="TOP")
+        settings = layer.build()["settings"]
+        self.assertEqual(settings["tabs.position"], "top")
+
+    def test_statusbar_show_injected(self) -> None:
+        """statusbar_show='in-mode' maps to statusbar.show."""
+        from layers.user import UserLayer
+        layer = UserLayer(statusbar_show="in-mode")
+        settings = layer.build()["settings"]
+        self.assertEqual(settings["statusbar.show"], "in-mode")
+
+    def test_statusbar_show_never(self) -> None:
+        from layers.user import UserLayer
+        layer = UserLayer(statusbar_show="never")
+        settings = layer.build()["settings"]
+        self.assertEqual(settings["statusbar.show"], "never")
+
+    def test_statusbar_show_none_not_in_settings(self) -> None:
+        from layers.user import UserLayer
+        layer = UserLayer(statusbar_show=None)
+        settings = layer.build().get("settings", {})
+        self.assertNotIn("statusbar.show", settings)
+
+    def test_statusbar_show_invalid_skipped(self) -> None:
+        """Invalid statusbar_show value is silently skipped."""
+        from layers.user import UserLayer
+        layer = UserLayer(statusbar_show="sometimes")
+        settings = layer.build().get("settings", {})
+        self.assertNotIn("statusbar.show", settings)
+
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Runner
+# v9: ConfigReloadedEvent
 # ═════════════════════════════════════════════════════════════════════════════
+class TestConfigReloadedEvent(unittest.TestCase):
+
+    def test_event_exists(self) -> None:
+        from core.protocol import ConfigReloadedEvent
+        e = ConfigReloadedEvent()
+        self.assertEqual(e.change_count, 0)  # type: ignore
+        self.assertEqual(e.error_count, 0)   # type: ignore
+        self.assertEqual(e.duration_ms, 0.0) # type: ignore
+        self.assertEqual(e.reason, "config-source") # type: ignore
+
+    def test_event_fields(self) -> None:
+        from core.protocol import ConfigReloadedEvent
+        e = ConfigReloadedEvent(change_count=5, error_count=1, duration_ms=0.2 , reason="test")
+        self.assertEqual(e.change_count, 5)     # type: ignore
+        self.assertEqual(e.error_count, 1)      # type: ignore
+        self.assertEqual(e.duration_ms, 0.2)    # type: ignore
+        self.assertEqual(e.reason, "test")      # type: ignore
+
+    def test_event_is_frozen(self) -> None:
+        from core.protocol import ConfigReloadedEvent
+        e = ConfigReloadedEvent(change_count=3)
+        with self.assertRaises(Exception):
+            e.change_count = 99  # type: ignore[misc]
+
+    def test_event_subscribed_and_emitted(self) -> None:
+        """EventBus receives ConfigReloadedEvent correctly."""
+        from core.protocol import ConfigReloadedEvent, MessageRouter
+        router = MessageRouter()
+        received: List[Any] = []
+        router.events.subscribe(ConfigReloadedEvent, received.append)
+        router.events.publish(ConfigReloadedEvent(change_count=7))
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].change_count, 7)  # type: ignore
+
+
 if __name__ == "__main__":
     print("=" * 65)
     print("qutebrowser config extension tests")
     print("=" * 65)
     unittest.main(verbosity=2)
-
-

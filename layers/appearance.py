@@ -25,7 +25,7 @@ Fix applied vs original:
 v9 changes:
   - ``_font_settings`` now reads ``ColorScheme.font_size_web`` to set
     ``fonts.web.size.default`` instead of the hard-coded ``16``.
-  - Added ``_parse_px(s)`` helper to convert ``"16px"`` / ``"16"`` strings
+  - Added ``parse_px(s)`` helper to convert ``"16px"`` / ``"16"`` strings
     to the integer pixel value qutebrowser expects for web font sizes.
   - ``fonts.default_family`` and ``fonts.default_size`` now explicitly set
     from ``ColorScheme.font_mono`` / ``font_size_ui`` so that UserLayer
@@ -141,7 +141,7 @@ THEMES: Dict[str, ColorScheme] = {
 # Helpers
 # ─────────────────────────────────────────────
 
-def _parse_px(size_str: str) -> int:
+def parse_px(size_str: str) -> int:
     """
     Parse a CSS-like pixel size string to an integer.
 
@@ -356,7 +356,7 @@ class AppearanceLayer(BaseConfigLayer):
             "fonts.web.family.standard":    c.font_sans,
             # fonts.web.size.default expects an int (pixels)
             # ColorScheme.font_size_web is "16px" — parse to int
-            "fonts.web.size.default":       _parse_px(c.font_size_web),
+            "fonts.web.size.default":       parse_px(c.font_size_web),
             "fonts.web.size.default_fixed": 13,
             "fonts.web.size.minimum":       0,
         }

@@ -67,10 +67,10 @@ class ConfigPacket:
     completely new key-set (e.g. key renaming).
     """
     source:   str            # origin label, e.g. "layer:base"
-    data:     ConfigDict     = field(default_factory=dict)   # v7 fix: was ConfigDict
-    meta:     Dict[str, Any] = field(default_factory=dict)   # v7 fix: was dict[str, Any]
-    errors:   List[str]      = field(default_factory=list)   # v7 fix: was list[str]
-    warnings: List[str]      = field(default_factory=list)   # v7 fix: was list[str]
+    data:     ConfigDict     = field(default_factory=dict[str, Any])
+    meta:     Dict[str, Any] = field(default_factory=dict[str, Any])
+    errors:   List[str]      = field(default_factory=list[str])
+    warnings: List[str]      = field(default_factory=list[str])
 
     def with_data(self, extra: ConfigDict) -> "ConfigPacket":
         """Return a new packet with ``extra`` merged *on top of* current data."""
@@ -376,7 +376,7 @@ class MergeStage(PipeStage):
 # ─────────────────────────────────────────────
 
 @functools.lru_cache(maxsize=None)
-def _noop_pipeline() -> Pipeline:
+def noop_pipeline() -> Pipeline:
     """Return a shared empty pipeline (identity transform)."""
     return Pipeline("noop")
 

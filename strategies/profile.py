@@ -132,7 +132,7 @@ class ProfileStrategy(Strategy[ProfileResolution]):
         elif isinstance(raw, UnifiedProfile):
             profile = raw
         else:
-            logger.warning("[ProfileStrategy] unexpected type %r, falling back to DAILY", type(raw))
+            logger.warning("[ProfileStrategy] unexpected type %r, falling back to DAILY", type(raw)) # type: ignore
             profile = UnifiedProfile.DAILY
 
         resolution = _RESOLUTION_TABLE[profile]

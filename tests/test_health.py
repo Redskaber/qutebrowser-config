@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import sys
+from typing import Any
 import unittest
 
 _here = os.path.dirname(os.path.abspath(__file__))
@@ -31,8 +32,9 @@ if _root not in sys.path:
 # Individual Check Tests
 # ═════════════════════════════════════════════════════════════════════════════
 class TestIndividualChecks(unittest.TestCase):
+    from core.health import HealthIssue
 
-    def _run(self, check_name: str, settings: dict) -> list:
+    def _run(self, check_name: str, settings: dict[str, Any]) -> list[HealthIssue]:
         """Helper: run one named check, return list of issues."""
         import core.health as h
         check_cls = getattr(h, check_name)
@@ -297,7 +299,7 @@ class TestHealthChecker(unittest.TestCase):
             @property
             def name(self) -> str:
                 return "always-warn"
-            def run(self, settings, report):  # type: ignore[override]
+            def run(self, settings: dict[str, Any], report: HealthReport):
                 report.add(HealthIssue(check=self.name, severity=Severity.WARNING, message="test"))
 
         c = HealthChecker().add(AlwaysWarn())
@@ -305,12 +307,12 @@ class TestHealthChecker(unittest.TestCase):
         self.assertEqual(len(report.warnings), 1)
 
     def test_broken_check_doesnt_crash_checker(self) -> None:
-        from core.health import HealthCheck, HealthChecker, Severity
+        from core.health import HealthCheck, HealthChecker, HealthReport
         class Crasher(HealthCheck):
             @property
             def name(self) -> str:
                 return "crasher"
-            def run(self, settings, report):  # type: ignore[override]
+            def run(self, settings: dict[str, Any], report: HealthReport):  # type: ignore[override]
                 raise RuntimeError("intentional crash")
 
         c = HealthChecker().add(Crasher())
@@ -341,7 +343,7 @@ class TestHealthChecker(unittest.TestCase):
             @property
             def name(self) -> str:
                 return "multi"
-            def run(self, settings, report):  # type: ignore[override]
+            def run(self, settings: dict[str, Any], report: HealthReport):
                 report.add(HealthIssue(check=self.name, severity=Severity.INFO,    message="info"))
                 report.add(HealthIssue(check=self.name, severity=Severity.WARNING, message="warn"))
 
@@ -377,7 +379,7 @@ class TestContextLayer(unittest.TestCase):
         self.assertIn("crates", engines)
 
     def test_research_context(self) -> None:
-        from layers.context import ContextLayer, ContextMode
+        from layers.context import ContextLayer
         layer = ContextLayer(context="research")
         settings = layer.build().get("settings", {})
         engines = settings.get("url.searchengines", {})
@@ -385,14 +387,14 @@ class TestContextLayer(unittest.TestCase):
         self.assertIn("scholar", engines)
 
     def test_media_context(self) -> None:
-        from layers.context import ContextLayer, ContextMode
+        from layers.context import ContextLayer
         layer = ContextLayer(context="media")
         settings = layer.build().get("settings", {})
         # Media context allows autoplay
         self.assertTrue(settings.get("content.autoplay", False))
 
     def test_work_context(self) -> None:
-        from layers.context import ContextLayer, ContextMode
+        from layers.context import ContextLayer
         layer = ContextLayer(context="work")
         settings = layer.build().get("settings", {})
         engines = settings.get("url.searchengines", {})
@@ -506,7 +508,7 @@ class TestContextLayer(unittest.TestCase):
         self.assertIn(",Cg", keys)
 
     def test_seven_contexts_in_table(self) -> None:
-        from layers.context import _CONTEXT_TABLE
+        from layers.context import _CONTEXT_TABLE   # type: ignore[import]
         self.assertEqual(len(_CONTEXT_TABLE), 7)
 
 

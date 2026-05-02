@@ -56,10 +56,10 @@ class HostRule:
         enabled:     Set to False to temporarily disable without deleting.
     """
     pattern:     str
-    settings:    ConfigDict        = field(default_factory=dict)
-    description: str               = ""
-    category:    str               = "general"
-    enabled:     bool              = True
+    settings:    ConfigDict = field(default_factory=dict[str, Any])
+    description: str        = ""
+    category:    str        = "general"
+    enabled:     bool       = True
 
 
 # ─────────────────────────────────────────────

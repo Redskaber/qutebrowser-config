@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, cast
 
-from core.strategy import ConfigDict, Strategy, StrategyRegistry, _recursive_merge
+from core.strategy import ConfigDict, Strategy, StrategyRegistry, recursive_merge
 
 logger = logging.getLogger("qute.strategies.merge")
 
@@ -72,7 +72,7 @@ class DeepMergeStrategy(Strategy[ConfigDict]):
     def apply(self, context: ConfigDict) -> ConfigDict:
         base:    ConfigDict = cast(ConfigDict, context.get("base", {}))
         overlay: ConfigDict = cast(ConfigDict, context.get("overlay", {}))
-        return _recursive_merge(base, overlay)
+        return recursive_merge(base, overlay)
 
 
 class ProfileAwareMergeStrategy(Strategy[ConfigDict]):
@@ -104,10 +104,10 @@ class ProfileAwareMergeStrategy(Strategy[ConfigDict]):
             Dict[str, Any], context.get("profiles", {})
         )
 
-        merged = _recursive_merge(base, overlay)
+        merged = recursive_merge(base, overlay)
         if profile and profile in profiles:
             profile_delta = cast(ConfigDict, profiles[profile])
-            merged = _recursive_merge(merged, profile_delta)
+            merged = recursive_merge(merged, profile_delta)
             logger.debug("[ProfileAwareMerge] applied profile '%s'", profile)
 
         return merged

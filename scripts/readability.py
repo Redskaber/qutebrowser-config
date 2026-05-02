@@ -111,7 +111,7 @@ error = fatal
 
 def main() -> None:
     try:
-        from readability import Document
+        from readability import Document  # type: ignore
     except ImportError:
         error("readability-lxml not installed (pip install readability-lxml)")
         return
@@ -123,9 +123,9 @@ def main() -> None:
     with open(QUTE_HTML, "r", encoding="utf-8", errors="replace") as f:
         raw_html = f.read()
 
-    doc = Document(raw_html)
-    title   = doc.title()
-    content = doc.summary(html_partial=True)
+    doc = Document(raw_html)                    # type: ignore
+    title   = doc.title()                       # type: ignore
+    content = doc.summary(html_partial=True)    # type: ignore
 
     html = f"""<!DOCTYPE html>
             <html lang="en">

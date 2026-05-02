@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 import os
+from typing import Any, List
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -44,7 +45,7 @@ class TestConfigDiffer(unittest.TestCase):
         self.Snapshot = ConfigSnapshot
         self.ChangeKind = ChangeKind
 
-    def _snap(self, data):
+    def _snap(self, data: dict[str, Any]):
         return self.Snapshot(data=data)
 
     def test_no_changes(self):
@@ -149,8 +150,8 @@ class TestIncrementalApplier(unittest.TestCase):
         self.applier = IncrementalApplier(self.store)
 
     def test_apply_only_changed(self):
-        applied = {}
-        def apply_fn(key, value):
+        applied: dict[str, Any] = {}
+        def apply_fn(key: str, value: Any):
             applied[key] = value
 
         self.applier.record({"a": 1, "b": 2}, "v1")
@@ -167,16 +168,18 @@ class TestIncrementalApplier(unittest.TestCase):
         self.assertIn("c", applied)
 
     def test_observer_called_on_changes(self):
-        observed = []
+        def apply_fn(k: Any, v: Any) -> None:
+            pass
+        observed: List[Any] = []
         self.applier.on_changes(observed.append)
         self.applier.record({"x": 1}, "v1")
         self.applier.record({"x": 2}, "v2")
         changes = self.applier.compute_delta()
-        self.applier.apply_delta(changes, lambda k, v: None)
+        self.applier.apply_delta(changes, apply_fn)
         self.assertEqual(len(observed), 1)
 
     def test_apply_fn_exception_returns_error(self):
-        def bad_apply(key, value):
+        def bad_apply(key: str, value: Any):
             raise ValueError("boom")
 
         self.applier.record({"a": 1}, "v1")
@@ -195,7 +198,7 @@ class TestLifecycleManager(unittest.TestCase):
 
     def test_register_and_run(self):
         mgr = self.Manager()
-        called = []
+        called: List[str] = []
         mgr.register(self.Hook.PRE_APPLY, lambda: called.append("a"))
         mgr.register(self.Hook.PRE_APPLY, lambda: called.append("b"))
         mgr.run(self.Hook.PRE_APPLY)
@@ -203,7 +206,7 @@ class TestLifecycleManager(unittest.TestCase):
 
     def test_priority_ordering(self):
         mgr = self.Manager()
-        called = []
+        called: List[str] = []
         mgr.register(self.Hook.PRE_APPLY, lambda: called.append("low"),  priority=90)
         mgr.register(self.Hook.PRE_APPLY, lambda: called.append("high"), priority=10)
         mgr.run(self.Hook.PRE_APPLY)
@@ -211,19 +214,19 @@ class TestLifecycleManager(unittest.TestCase):
 
     def test_error_in_handler_doesnt_stop_others(self):
         mgr = self.Manager()
-        called = []
+        called: List[int] = []
         def bad(): raise RuntimeError("oops")
-        mgr.register(self.Hook.PRE_APPLY, bad,                    priority=10)
+        mgr.register(self.Hook.PRE_APPLY, bad,                      priority=10)
         mgr.register(self.Hook.PRE_APPLY, lambda: called.append(1), priority=20)
         mgr.run(self.Hook.PRE_APPLY)
         self.assertEqual(called, [1])
 
     def test_decorator(self):
         mgr = self.Manager()
-        called = []
+        called: List[bool] = []
 
         @mgr.decorator(self.Hook.POST_APPLY)
-        def my_hook():
+        def my_hook(): # type: ignore
             called.append(True)
 
         mgr.run(self.Hook.POST_APPLY)
@@ -239,7 +242,7 @@ class TestCommandBus(unittest.TestCase):
 
     def test_dispatch_to_handler(self):
         bus = self.CommandBus()
-        received = []
+        received: List[Any] = []
         bus.register(self.SetOptionCommand, received.append)
         cmd = self.SetOptionCommand(key="test.key", value=42)
         bus.dispatch(cmd)

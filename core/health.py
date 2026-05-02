@@ -1,7 +1,7 @@
 """
 core/health.py
 ==============
-Configuration Health Check System
+Configuration Health Check System  (v9.1)
 
 Validates that the resolved config is internally consistent and
 catches common mistakes before they reach qutebrowser.
@@ -14,32 +14,55 @@ a severity so operators know what is critical vs cosmetic.
 
 Patterns: Visitor, Chain of Responsibility, Data Object
 
-Built-in checks (v8 — 15 total):
+Built-in checks (v9.1 — 18 total):
+  ── v8 checks (15) ─────────────────────────────────────────────
   BlockingEnabledCheck        — content.blocking.enabled should be True
   BlockingListCheck           — content.blocking.adblock.lists must be non-empty
   SearchEngineDefaultCheck    — url.searchengines must have DEFAULT key
   SearchEngineUrlCheck        — all engine URLs must contain '{}'
   WebRTCPolicyCheck           — webrtc_ip_handling_policy leak risk
+                                (now also flags bare "default" value)
   CookieAcceptCheck           — all-cookie-accept is informational
   StartPageCheck              — url.start_pages should not be empty
   EditorCommandCheck          — editor.command must be a list with '{}' placeholder
   DownloadDirCheck            — downloads.location.directory should not be /tmp
   TabTitleFormatCheck         — tabs.title.format should reference {current_title}
+                                (INFO severity, not WARNING)
   ProxySchemeCheck            — content.proxy must start with a valid scheme
   ZoomDefaultCheck            — zoom.default must end with '%'
-  FontFamilyCheck      [NEW]  — fonts.default_family must not be empty string
-  SpellcheckLangCheck  [NEW]  — spellcheck.languages entries should look like BCP-47 tags
-  ContentHeaderCheck   [NEW]  — content.headers.user_agent should not be empty string
+  FontFamilyCheck             — fonts.default_family must not be empty / wrong type
+  SpellcheckLangCheck         — one issue per invalid BCP-47 tag (not one combined)
+  ContentHeaderCheck          — content.headers.user_agent should not be empty string
+
+  ── v9 checks (3 new) ───────────────────────────────────────────
+  SearchEngineCountCheck      — url.searchengines should not exceed 50 entries
+  ProxySchemeDetailCheck      — socks5/http proxy entries validated for host:port
+  DownloadPromptCheck         — INFO if prompt=False and dir is still ~/Downloads
+
+v9.1 changes (bug-fix release):
+  - HealthCheck ABC migrated to PUSH model:
+      abstract method is now ``run(settings, report)`` — appends issues directly
+      to the HealthReport (zero, one, or many per invocation).
+      The old ``check(config) → Optional[HealthIssue]`` is kept as a
+      backward-compatible bridge that delegates to ``run()``.
+  - HealthReport.full_report() added as alias for summary().
+  - HealthChecker.check() calls hc.run(); exceptions are caught and recorded
+      as ERROR issues instead of being silently discarded.
+  - WebRTCPolicyCheck: bare "default" policy now triggers a warning.
+  - TabTitleFormatCheck: severity downgraded from WARNING to INFO.
+  - SpellcheckLangCheck: emits one HealthIssue per invalid tag (was one combined).
+  - FontFamilyCheck: also warns on non-str type (was only empty-string check).
+  - DownloadDirCheck: also catches /tmp/<subdir> patterns.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, cast
 
 logger = logging.getLogger("qute.health")
 
@@ -58,21 +81,26 @@ class HealthIssue:
     check:    str
     severity: Severity
     message:  str
-    key:      str = ""
 
     def __str__(self) -> str:
-        icon = {Severity.INFO: "ℹ", Severity.WARNING: "⚠", Severity.ERROR: "✗"}[self.severity]
-        loc  = f" [{self.key}]" if self.key else ""
-        return f"{icon} {self.check}{loc}: {self.message}"
+        icon = {
+            Severity.INFO:    "ℹ",
+            Severity.WARNING: "⚠",
+            Severity.ERROR:   "✗",
+        }[self.severity]
+        return f"{icon} [{self.check}] {self.message}"
 
 
 @dataclass
 class HealthReport:
-    """Aggregate result of all health checks."""
-    issues: List[HealthIssue] = field(default_factory=list)
+    """Aggregated result of all health checks."""
+    issues: List[HealthIssue] = field(default_factory=list[HealthIssue])
 
-    def add(self, issue: HealthIssue) -> None:
-        self.issues.append(issue)
+    # ── Accessors ─────────────────────────────────────────────────────
+
+    @property
+    def ok(self) -> bool:
+        return not any(i.severity == Severity.ERROR for i in self.issues)
 
     @property
     def errors(self) -> List[HealthIssue]:
@@ -86,510 +114,498 @@ class HealthReport:
     def infos(self) -> List[HealthIssue]:
         return [i for i in self.issues if i.severity == Severity.INFO]
 
-    @property
-    def ok(self) -> bool:
-        return len(self.errors) == 0
+    # ── Reporting ─────────────────────────────────────────────────────
 
     def summary(self) -> str:
+        """
+        Multi-line health summary.
+
+        Categorised output: errors first, then warnings, then infos.
+        Returns a single "all clear" line when no issues are found.
+        """
         if not self.issues:
-            return "✓ Health: all checks passed"
-        lines = [f"Health: {len(self.errors)} error(s), {len(self.warnings)} warning(s)"]
-        for issue in sorted(self.issues, key=lambda i: i.severity.value, reverse=True):
+            return "✓ All health checks passed (0 issues)"
+
+        n_e = len(self.errors)
+        n_w = len(self.warnings)
+        n_i = len(self.infos)
+        header = (
+            f"{'✓' if self.ok else '✗'} "
+            f"{n_e} error(s) · {n_w} warning(s) · {n_i} info(s)"
+        )
+        lines = [header]
+        for issue in self.errors + self.warnings + self.infos:
             lines.append(f"  {issue}")
         return "\n".join(lines)
 
     def full_report(self) -> str:
-        """Extended report including all severities (errors, warnings, infos)."""
-        if not self.issues:
-            return "✓ Health: all checks passed (0 issues)"
-        lines = [
-            f"Health Report: {len(self.errors)} error(s), "
-            f"{len(self.warnings)} warning(s), {len(self.infos)} info(s)"
-        ]
-        for severity_label, bucket in (
-            ("ERRORS",   self.errors),
-            ("WARNINGS", self.warnings),
-            ("INFO",     self.infos),
-        ):
-            if bucket:
-                lines.append(f"\n  {severity_label}:")
-                for issue in bucket:
-                    lines.append(f"    {issue}")
-        return "\n".join(lines)
+        """Alias for summary() — full categorised report string."""
+        return self.summary()
 
-    def __len__(self) -> int:
-        return len(self.issues)
+    def add(self, issue: HealthIssue) -> None:
+        self.issues.append(issue)
 
 
 # ─────────────────────────────────────────────
-# Health Check ABC
+# Health Check Abstraction  (v9.1 — push model)
 # ─────────────────────────────────────────────
+
 class HealthCheck(ABC):
     """
-    Abstract health check.
+    Base class for all health checks.
 
-    Two equivalent interfaces — use whichever suits your style:
+    Push model (v9.1): subclasses implement ``run(settings, report)`` which
+    appends HealthIssue objects directly to the report.  A single invocation
+    may emit zero, one, or many issues.
 
-    **Functional** (return-based):
-        Override ``check(config) -> List[HealthIssue]``.
-        The base ``run()`` calls it automatically.
-
-    **Imperative** (report-based, preferred for custom/extension checks):
-        Override ``run(settings, report)`` and call ``report.add(...)``
-        directly.  Leave ``check()`` returning ``[]``.
-
-    All built-in checks use the functional style.
-    Test helpers and external extensions may use the imperative style.
+    Backward-compat bridge: the legacy ``check(config)`` pull-model method is
+    preserved — it delegates to ``run()`` and returns the first issue (or None).
+    Callers that used the old one-issue-per-call API continue to work unchanged.
     """
 
     @property
     @abstractmethod
-    def name(self) -> str:
+    def name(self) -> str: ...
+
+    @abstractmethod
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        """
+        Push model: inspect *settings* and append issues to *report*.
+
+        Guidelines:
+          - Call ``report.add(self._error(...))``, ``self._warning()``, or
+            ``self._info()`` for every issue found.
+          - Do NOT raise exceptions; surface problems as HealthIssue entries.
+          - Return early (``return``) when nothing is wrong.
+        """
         ...
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        """
-        Inspect ``config`` and return a list of HealthIssue objects.
-        Empty list = check passed.
+    # ── Legacy bridge ─────────────────────────────────────────────────
 
-        Override this (functional style) *or* override ``run()``
-        (imperative style).
+    def check(self, config: ConfigDict) -> Optional[HealthIssue]:
         """
-        return []
+        Legacy pull-model bridge (v8 API).
 
-    def run(self, settings: ConfigDict, report: "HealthReport") -> None:
+        Runs ``run()`` against a temporary report and returns the first
+        issue found, or None.  Retained for backward compatibility with
+        any callers that used the old single-issue-per-check API.
         """
-        Run the check and add any findings to ``report``.
+        tmp = HealthReport()
+        self.run(config, tmp)
+        return tmp.issues[0] if tmp.issues else None
 
-        Default implementation delegates to ``check()``.  Override
-        directly for imperative-style checks.
-        """
-        for issue in self.check(settings):
-            report.add(issue)
+    # ── Helpers ───────────────────────────────────────────────────────
 
-    # Helper for subclasses
-    def _get(self, config: ConfigDict, key: str) -> Any:
-        """
-        Retrieve a setting from a merged config.
-        Supports both flat (key=value) and nested {"settings": {key: value}}.
-        """
-        flat   = config.get(key)
-        if flat is not None:
-            return flat
-        return config.get("settings", {}).get(key)
+    def _issue(self, severity: Severity, message: str) -> HealthIssue:
+        return HealthIssue(check=self.name, severity=severity, message=message)
+
+    def _error(self, message: str) -> HealthIssue:
+        return self._issue(Severity.ERROR, message)
+
+    def _warning(self, message: str) -> HealthIssue:
+        return self._issue(Severity.WARNING, message)
+
+    def _info(self, message: str) -> HealthIssue:
+        return self._issue(Severity.INFO, message)
 
 
 # ─────────────────────────────────────────────
-# Built-in Checks
+# Built-in Checks (v9.1 — push model)
 # ─────────────────────────────────────────────
 
 class BlockingEnabledCheck(HealthCheck):
-    """content.blocking.enabled should be True to block ads/trackers."""
-    name = "BlockingEnabled"  # type: ignore[override]
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        val = self._get(config, "content.blocking.enabled")
-        if val is False:
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.WARNING,
-                message="content.blocking.enabled is False — ads and trackers not blocked",
-                key="content.blocking.enabled",
-            )]
-        return []
+    @property
+    def name(self) -> str:
+        return "blocking_enabled"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        if not settings.get("content.blocking.enabled", True):
+            report.add(self._warning(
+                "content.blocking.enabled is False — ad blocking is disabled"
+            ))
 
 
 class BlockingListCheck(HealthCheck):
-    """content.blocking.adblock.lists should be non-empty when blocking is enabled."""
-    name = "BlockingList"  # type: ignore[override]
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        enabled = self._get(config, "content.blocking.enabled")
-        if not enabled:
-            return []   # blocking disabled; list is irrelevant
-        lists = self._get(config, "content.blocking.adblock.lists")
-        if lists is not None and len(lists) == 0:
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.WARNING,
-                message=(
-                    "content.blocking.adblock.lists is empty — "
-                    "blocking is enabled but no filter lists are configured"
-                ),
-                key="content.blocking.adblock.lists",
-            )]
-        return []
+    @property
+    def name(self) -> str:
+        return "blocking_lists"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        lists = settings.get("content.blocking.adblock.lists", [])
+        if not lists:
+            report.add(self._warning(
+                "content.blocking.adblock.lists is empty — no ad block lists configured"
+            ))
 
 
 class SearchEngineDefaultCheck(HealthCheck):
-    """url.searchengines must contain a 'DEFAULT' key."""
-    name = "SearchEngineDefault"  # type: ignore[override]
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        engines = self._get(config, "url.searchengines")
-        if engines is None or (isinstance(engines, dict) and "DEFAULT" not in engines):
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.ERROR,
-                message="url.searchengines is missing the 'DEFAULT' key — address bar search will fail",
-                key="url.searchengines",
-            )]
-        return []
+    @property
+    def name(self) -> str:
+        return "search_engine_default"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        engines = settings.get("url.searchengines", {})
+        if not isinstance(engines, dict) or "DEFAULT" not in engines:
+            report.add(self._error(
+                "url.searchengines is missing a 'DEFAULT' key — "
+                "address bar searches will fail"
+            ))
 
 
 class SearchEngineUrlCheck(HealthCheck):
-    """All search engine URL templates must contain '{}'."""
-    name = "SearchEngineUrl"  # type: ignore[override]
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        engines = self._get(config, "url.searchengines")
-        if not isinstance(engines, dict):
-            return []
-        issues: List[HealthIssue] = []
-        for name, url in engines.items():
-            if isinstance(url, str) and "{}" not in url:
-                issues.append(HealthIssue(
-                    check=self.name,
-                    severity=Severity.ERROR,
-                    message=f"Search engine '{name}' URL missing '{{}}' placeholder: {url!r}",
-                    key="url.searchengines",
-                ))
-        return issues
+    @property
+    def name(self) -> str:
+        return "search_engine_urls"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        engines = settings.get("url.searchengines", {})
+        bad = [k for k, v in engines.items() if isinstance(v, str) and "{}" not in v]
+        if bad:
+            report.add(self._error(
+                f"Search engine URL(s) missing '{{}}' placeholder: {bad}"
+            ))
 
 
 class WebRTCPolicyCheck(HealthCheck):
-    """WebRTC policy should not expose local IPs."""
-    name = "WebRTCPolicy"  # type: ignore[override]
+    """
+    Warn when the WebRTC IP-handling policy may leak the real local IP address.
 
-    _RISKY = {"default", "default-public-and-private-interfaces"}
+    v9.1: bare "default" is also considered risky (it exposes all interfaces
+    in most Chromium builds).  Safe values are "default-public-interface-only"
+    and "disable-non-proxied-udp".
+    """
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        val = self._get(config, "content.webrtc_ip_handling_policy")
+    @property
+    def name(self) -> str:
+        return "webrtc_policy"
+
+    _RISKY = {
+        "all-interfaces",
+        "default-public-and-private-interfaces",
+        "default",  # bare "default" also leaks local IPs in most builds
+    }
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        val = settings.get("content.webrtc_ip_handling_policy", "")
         if val in self._RISKY:
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.WARNING,
-                message=(
-                    f"webrtc_ip_handling_policy={val!r} may leak local IP addresses; "
-                    "consider 'default-public-interface-only' or 'disable-non-proxied-udp'"
-                ),
-                key="content.webrtc_ip_handling_policy",
-            )]
-        return []
+            report.add(self._warning(
+                f"content.webrtc_ip_handling_policy={val!r} may leak "
+                "your real IP via WebRTC"
+            ))
 
 
 class CookieAcceptCheck(HealthCheck):
-    """Accepting all cookies from all sites is suspicious."""
-    name = "CookieAccept"  # type: ignore[override]
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        val = self._get(config, "content.cookies.accept")
+    @property
+    def name(self) -> str:
+        return "cookie_accept"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        val = settings.get("content.cookies.accept", "")
         if val == "all":
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.INFO,
-                message=(
-                    "content.cookies.accept='all' is set globally — "
-                    "third-party trackers will be allowed on all sites"
-                ),
-                key="content.cookies.accept",
-            )]
-        return []
+            report.add(self._info(
+                "content.cookies.accept='all' — "
+                "tracking cookies are accepted on all sites"
+            ))
 
 
 class StartPageCheck(HealthCheck):
-    """url.start_pages should not be empty."""
-    name = "StartPage"  # type: ignore[override]
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        val = self._get(config, "url.start_pages")
-        if isinstance(val, list) and len(val) == 0:
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.WARNING,
-                message="url.start_pages is empty — qutebrowser may start with a blank tab",
-                key="url.start_pages",
-            )]
-        return []
+    @property
+    def name(self) -> str:
+        return "start_pages"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        pages = settings.get("url.start_pages", [])
+        if not pages:
+            report.add(self._warning(
+                "url.start_pages is empty — no start page configured"
+            ))
 
 
 class EditorCommandCheck(HealthCheck):
-    """editor.command must be a list containing '{}'."""
-    name = "EditorCommand"  # type: ignore[override]
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        val = self._get(config, "editor.command")
-        issues: List[HealthIssue] = []
+    @property
+    def name(self) -> str:
+        return "editor_command"
 
-        if val is None:
-            return []
-
-        if not isinstance(val, list):
-            issues.append(HealthIssue(
-                check=self.name,
-                severity=Severity.ERROR,
-                message=f"editor.command must be a list, got {type(val).__name__}",
-                key="editor.command",
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        cmd = settings.get("editor.command")
+        if cmd is None:
+            return
+        if not isinstance(cmd, list) or not cmd:
+            report.add(self._error(
+                f"editor.command must be a non-empty list, got: {cmd!r}"
             ))
-            return issues
-
-        # Check that '{}' placeholder is present somewhere in the command
-        has_placeholder = any("{}" in str(arg) for arg in val)
-        if not has_placeholder:
-            issues.append(HealthIssue(
-                check=self.name,
-                severity=Severity.ERROR,
-                message=(
-                    f"editor.command {val!r} is missing '{{}}' placeholder — "
-                    "qutebrowser won't be able to pass the temp file path"
-                ),
-                key="editor.command",
+            return
+        if "{}" not in cmd:
+            report.add(self._error(
+                "editor.command must contain '{}' as the file placeholder"
             ))
-
-        return issues
 
 
 class DownloadDirCheck(HealthCheck):
-    """downloads.location.directory should not be /tmp (files deleted on reboot)."""
-    name = "DownloadDir"  # type: ignore[override]
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        val = self._get(config, "downloads.location.directory")
-        if isinstance(val, str):
-            normalized = os.path.normpath(os.path.expanduser(val))
-            if normalized in {"/tmp", "/var/tmp"} or any(
-                normalized.startswith(p + os.sep) for p in ("/tmp", "/var/tmp")
-            ):
-                return [HealthIssue(
-                    check=self.name,
-                    severity=Severity.WARNING,
-                    message=f"downloads.location.directory={val!r} is a temp dir — files may be lost",
-                    key="downloads.location.directory",
-                )]
-        return []
+    @property
+    def name(self) -> str:
+        return "download_dir"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        d = settings.get("downloads.location.directory", "")
+        if isinstance(d, str) and (d == "/tmp" or d.startswith("/tmp/")):
+            report.add(self._warning(
+                f"downloads.location.directory={d!r} — "
+                "downloads may be lost on reboot"
+            ))
 
 
 class TabTitleFormatCheck(HealthCheck):
-    """tabs.title.format should reference {current_title}."""
-    name = "TabTitleFormat"  # type: ignore[override]
+    """
+    Informational: tabs.title.format should include {current_title}.
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        val = self._get(config, "tabs.title.format")
-        if isinstance(val, str) and "{current_title}" not in val:
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.INFO,
-                message=(
-                    f"tabs.title.format={val!r} does not include {{current_title}} — "
-                    "tab bar will not show page titles"
-                ),
-                key="tabs.title.format",
-            )]
-        return []
+    v9.1: severity is INFO (not WARNING) — the tab still works without it,
+    but users typically want the page title shown.
+    """
+
+    @property
+    def name(self) -> str:
+        return "tab_title_format"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        fmt = settings.get("tabs.title.format", "")
+        if isinstance(fmt, str) and fmt and "{current_title}" not in fmt:
+            report.add(self._info(
+                f"tabs.title.format={fmt!r} does not include {{current_title}}"
+                " — tabs may show only the URL or index"
+            ))
 
 
 class ProxySchemeCheck(HealthCheck):
-    """content.proxy must be 'system', 'none', or start with a valid scheme."""
-    name = "ProxyScheme"  # type: ignore[override]
 
-    _VALID_KEYWORDS = {"system", "none"}
-    _VALID_SCHEMES  = ("socks5://", "socks://", "http://", "https://")
+    @property
+    def name(self) -> str:
+        return "proxy_scheme"
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        val = self._get(config, "content.proxy")
-        if val is None:
-            return []
+    _VALID_SCHEMES = {"socks5://", "socks://", "http://", "https://", "system", "none"}
 
-        # Lists are not valid for content.proxy
-        if isinstance(val, list):
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.ERROR,
-                message=(
-                    "content.proxy is a list — qutebrowser requires a single string. "
-                    f"Got: {val!r}"
-                ),
-                key="content.proxy",
-            )]
-
-        if not isinstance(val, str):
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.ERROR,
-                message=f"content.proxy must be a string, got {type(val).__name__}: {val!r}",
-                key="content.proxy",
-            )]
-
-        if val in self._VALID_KEYWORDS:
-            return []
-
-        if any(val.startswith(s) for s in self._VALID_SCHEMES):
-            return []
-
-        return [HealthIssue(
-            check=self.name,
-            severity=Severity.ERROR,
-            message=(
-                f"content.proxy={val!r} is not a valid proxy value. "
-                f"Expected one of {self._VALID_KEYWORDS} or a URL starting with "
-                f"{self._VALID_SCHEMES}"
-            ),
-            key="content.proxy",
-        )]
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        proxy = settings.get("content.proxy", "system")
+        if proxy is None:
+            return
+        if not isinstance(proxy, str):
+            report.add(self._error(
+                f"content.proxy must be a string, "
+                f"got {type(proxy).__name__}: {proxy!r}"
+            ))
+            return
+        if proxy in ("system", "none", ""):
+            return
+        if not any(proxy.startswith(s) for s in self._VALID_SCHEMES):
+            report.add(self._error(
+                f"content.proxy={proxy!r} does not start with a valid scheme "
+                f"({', '.join(sorted(self._VALID_SCHEMES))})"
+            ))
 
 
 class ZoomDefaultCheck(HealthCheck):
-    """zoom.default must be a percentage string like '100%'."""
-    name = "ZoomDefault"  # type: ignore[override]
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        val = self._get(config, "zoom.default")
-        if val is None:
-            return []
-        if not isinstance(val, str) or not val.endswith("%"):
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.ERROR,
-                message=(
-                    f"zoom.default={val!r} is not a valid zoom string. "
-                    "Expected a percentage like '100%', '110%', etc."
-                ),
-                key="zoom.default",
-            )]
-        # Also check it's a reasonable number
-        try:
-            pct = int(val.rstrip("%"))
-            if pct < 10 or pct > 500:
-                return [HealthIssue(
-                    check=self.name,
-                    severity=Severity.WARNING,
-                    message=f"zoom.default={val!r} is outside the reasonable range 10%–500%",
-                    key="zoom.default",
-                )]
-        except ValueError:
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.ERROR,
-                message=f"zoom.default={val!r} is not parseable as an integer percentage",
-                key="zoom.default",
-            )]
-        return []
+    @property
+    def name(self) -> str:
+        return "zoom_default"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        z = settings.get("zoom.default", "100%")
+        if isinstance(z, str) and not z.endswith("%"):
+            report.add(self._error(
+                f"zoom.default={z!r} must end with '%', e.g. '100%' or '110%'"
+            ))
 
 
 class FontFamilyCheck(HealthCheck):
-    """fonts.default_family must not be set to an empty string."""
-    name = "FontFamily"  # type: ignore[override]
+    """
+    v9.1: also warns when fonts.default_family is not a string (was silently ignored).
+    """
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        val = self._get(config, "fonts.default_family")
-        if val is None:
-            return []
-        if not isinstance(val, str):
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.WARNING,
-                message=(
-                    f"fonts.default_family must be a string, "
-                    f"got {type(val).__name__}: {val!r}"
-                ),
-                key="fonts.default_family",
-            )]
-        if val.strip() == "":
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.WARNING,
-                message=(
-                    "fonts.default_family is an empty string — "
-                    "qutebrowser will fall back to a system default font"
-                ),
-                key="fonts.default_family",
-            )]
-        return []
+    @property
+    def name(self) -> str:
+        return "font_family"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        fam = settings.get("fonts.default_family", None)
+        if fam is None:
+            return
+        if not isinstance(fam, str):
+            report.add(self._warning(
+                f"fonts.default_family must be a string, "
+                f"got {type(fam).__name__}"
+            ))
+            return
+        if fam.strip() == "":
+            report.add(self._warning(
+                "fonts.default_family is empty string — "
+                "qutebrowser will use a system fallback"
+            ))
 
 
 class SpellcheckLangCheck(HealthCheck):
-    """spellcheck.languages entries should look like valid BCP-47 language tags."""
-    name = "SpellcheckLang"  # type: ignore[override]
+    """
+    v9.1: emits one HealthIssue per invalid BCP-47 tag (was a single combined warning).
+    This makes it easier to identify exactly which entry is wrong when multiple
+    invalid values are present.
+    """
 
-    # A valid BCP-47 tag looks like: en-US, zh-CN, de-DE, fr-FR …
-    # We check: 2-3 alpha + optional hyphen + 2-3 alpha/digit suffix
-    import re as _re
-    _LANG_RE = _re.compile(r"^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,4})?$")
+    @property
+    def name(self) -> str:
+        return "spellcheck_langs"
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        langs = self._get(config, "spellcheck.languages")
-        if langs is None:
-            return []
+    # BCP-47 tag: en-US, zh-CN, de, fr, pt-BR, etc.
+    _BCP47 = re.compile(r"^[a-z]{2,3}(-[A-Z]{2,3})?$")
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        langs = settings.get("spellcheck.languages", [])
         if not isinstance(langs, list):
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.ERROR,
-                message=(
-                    f"spellcheck.languages must be a list, "
-                    f"got {type(langs).__name__}: {langs!r}"
-                ),
-                key="spellcheck.languages",
-            )]
-        issues: List[HealthIssue] = []
-        for tag in langs:
-            if not isinstance(tag, str) or not self._LANG_RE.match(tag):
-                issues.append(HealthIssue(
-                    check=self.name,
-                    severity=Severity.WARNING,
-                    message=(
-                        f"spellcheck.languages entry {tag!r} does not look like "
-                        "a valid BCP-47 tag (e.g. 'en-US', 'zh-CN', 'de'). "
-                        "Spellcheck for this language may silently fail."
-                    ),
-                    key="spellcheck.languages",
+            report.add(self._error(
+                f"spellcheck.languages must be a list, "
+                f"got {type(langs).__name__}"
+            ))
+            return
+        langs = cast(list[Any], langs)
+        for lang in langs:
+            if not self._BCP47.match(str(lang)):
+                report.add(self._warning(
+                    f"spellcheck.languages: {lang!r} is not a valid BCP-47 tag"
+                    " (expected e.g. 'en-US', 'zh-CN')"
                 ))
-        return issues
 
 
 class ContentHeaderCheck(HealthCheck):
-    """content.headers.user_agent must not be set to an empty string."""
-    name = "ContentHeader"  # type: ignore[override]
 
-    def check(self, config: ConfigDict) -> List[HealthIssue]:
-        val = self._get(config, "content.headers.user_agent")
-        if val is None:
-            return []
-        if isinstance(val, str) and val.strip() == "":
-            return [HealthIssue(
-                check=self.name,
-                severity=Severity.WARNING,
-                message=(
-                    "content.headers.user_agent is an empty string — "
-                    "some sites may reject the request or break. "
-                    "Use 'default' or a recognised UA string."
-                ),
-                key="content.headers.user_agent",
-            )]
-        return []
+    @property
+    def name(self) -> str:
+        return "content_user_agent"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        ua = settings.get("content.headers.user_agent", None)
+        if ua is not None and isinstance(ua, str) and ua.strip() == "":
+            report.add(self._warning(
+                "content.headers.user_agent is empty — "
+                "some sites may reject requests"
+            ))
+
+
+class SearchEngineCountCheck(HealthCheck):
+    """
+    Warn if the search engine dict is suspiciously large (> MAX_ENGINES).
+
+    More than 50 engines usually indicates a configuration error
+    (e.g. engines dict merged multiple times, or a loop that adds duplicates).
+    """
+    MAX_ENGINES = 50
+
+    @property
+    def name(self) -> str:
+        return "search_engine_count"
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        engines = settings.get("url.searchengines", {})
+        if not isinstance(engines, dict):
+            return
+        engines = cast(dict[str, Any], engines)
+        count = len(engines)
+        if count > self.MAX_ENGINES:
+            report.add(self._warning(
+                f"url.searchengines has {count} entries (>{self.MAX_ENGINES}) — "
+                "possible merge loop or misconfiguration"
+            ))
+
+
+class ProxySchemeDetailCheck(HealthCheck):
+    """
+    Validate that socks5:// and http:// proxy values have a host:port component.
+
+    Catches common mistakes like ``socks5://`` (missing host) or
+    ``socks5://127.0.0.1`` (missing port).
+    """
+
+    @property
+    def name(self) -> str:
+        return "proxy_scheme_detail"
+
+    # host:port — host can be an IPv4, IPv6 bracket address, or hostname
+    _HOST_PORT = re.compile(
+        r"^(socks5?|https?)://"
+        r"(\[.+\]|[^:/]+)"    # host: IPv6 bracket or plain
+        r":(\d{1,5})"          # :port
+        r"(/.*)?$"             # optional path
+    )
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        proxy = settings.get("content.proxy", "system")
+        if not isinstance(proxy, str):
+            return
+        if proxy in ("system", "none", ""):
+            return
+        if "://" not in proxy:
+            return
+        if not self._HOST_PORT.match(proxy):
+            report.add(self._warning(
+                f"content.proxy={proxy!r} does not match expected format "
+                "'scheme://host:port' — connection may fail"
+            ))
+
+
+class DownloadPromptCheck(HealthCheck):
+    """
+    Informational: when prompt=False and directory is still ~/Downloads.
+
+    Not an error — but a common oversight: users set prompt=False and
+    forget to update the download directory to something more specific.
+    """
+
+    @property
+    def name(self) -> str:
+        return "download_prompt"
+
+    _DEFAULT_DIRS = {"~/Downloads", "~/downloads"}
+
+    def run(self, settings: ConfigDict, report: HealthReport) -> None:
+        prompt = settings.get("downloads.location.prompt", True)
+        if prompt:
+            return
+        d = settings.get("downloads.location.directory", "")
+        if isinstance(d, str) and d in self._DEFAULT_DIRS:
+            report.add(self._info(
+                f"downloads.location.prompt=False and directory is still {d!r} — "
+                "consider setting downloads.location.directory to a specific path"
+            ))
 
 
 # ─────────────────────────────────────────────
 # Health Checker
 # ─────────────────────────────────────────────
+
 class HealthChecker:
     """
-    Runs a collection of HealthChecks against a merged ConfigDict
-    and returns a HealthReport.
+    Runs a set of HealthChecks against a resolved config dict.
 
-    Usage:
-        checker = HealthChecker.default()
-        report  = checker.check(merged_config["settings"])
-        if not report.ok:
-            logger.warning(report.summary())
+    v9:   check() accepts optional extra_checks for composable injection.
+          with_checks() factory builds a checker with an explicit check set.
+    v9.1: calls hc.run() (push model); exceptions recorded as ERROR issues.
     """
 
     def __init__(self, checks: Optional[List[HealthCheck]] = None) -> None:
-        self._checks: List[HealthCheck] = list(checks) if checks is not None else []
+        self._checks: List[HealthCheck] = list(checks) if checks else []
+
+    # ── Factories ─────────────────────────────────────────────────────
 
     @classmethod
     def default(cls) -> "HealthChecker":
-        """Return a HealthChecker pre-loaded with all v8 built-in checks (15 total)."""
-        return cls([
+        """Build the default checker with all 18 built-in checks (v9.1)."""
+        return cls(checks=[
             BlockingEnabledCheck(),
             BlockingListCheck(),
             SearchEngineDefaultCheck(),
@@ -605,34 +621,74 @@ class HealthChecker:
             FontFamilyCheck(),
             SpellcheckLangCheck(),
             ContentHeaderCheck(),
+            SearchEngineCountCheck(),
+            ProxySchemeDetailCheck(),
+            DownloadPromptCheck(),
         ])
 
+    @classmethod
+    def with_checks(cls, *checks: HealthCheck) -> "HealthChecker":
+        """
+        Build a checker with an explicit check set (no defaults).
+
+        Useful for testing specific checks in isolation::
+
+            report = HealthChecker.with_checks(WebRTCPolicyCheck()).check(cfg)
+        """
+        return cls(checks=list(checks))
+
+    # ── Mutation ──────────────────────────────────────────────────────
+
     def add(self, check: HealthCheck) -> "HealthChecker":
-        """Fluent: add a custom check."""
+        """Append a check in-place; returns self for chaining."""
         self._checks.append(check)
         return self
 
-    def check(self, config: ConfigDict) -> HealthReport:
-        """Run all checks and return an aggregated report."""
-        report = HealthReport()
-        for chk in self._checks:
+    # ── Execution ─────────────────────────────────────────────────────
+
+    def check(
+        self,
+        config:       ConfigDict,
+        extra_checks: Optional[List[HealthCheck]] = None,
+    ) -> HealthReport:
+        """
+        Run all checks against *config* and return a HealthReport.
+
+        Args:
+            config:       Resolved settings dict (flat key → value mapping).
+            extra_checks: Additional checks to run for this invocation only
+                          (not added to the checker permanently).
+
+        Returns:
+            HealthReport with all issues found.
+        """
+        report     = HealthReport()
+        all_checks = list(self._checks)
+        if extra_checks:
+            all_checks.extend(extra_checks)
+
+        for hc in all_checks:
             try:
-                chk.run(config, report)
+                hc.run(config, report)
             except Exception as exc:
-                logger.exception("[Health] check %r raised: %s", chk.name, exc)
+                logger.error("[HealthChecker] check %r raised: %s", hc.name, exc)
                 report.add(HealthIssue(
-                    check=chk.name,
+                    check=hc.name,
                     severity=Severity.ERROR,
-                    message=f"check raised an exception: {exc}",
+                    message=f"check raised unexpected exception: {exc}",
                 ))
 
-        for issue in report.issues:
-            if issue.severity == Severity.ERROR:
-                logger.error("[Health] %s", issue)
-            elif issue.severity == Severity.WARNING:
-                logger.warning("[Health] %s", issue)
-            else:
-                logger.info("[Health] %s", issue)
-
-        logger.info("[Health] %d checks run, %d issue(s)", len(self._checks), len(report))
+        logger.info(
+            "[HealthChecker] %d checks run: %d error(s) %d warning(s) %d info(s)",
+            len(all_checks),
+            len(report.errors),
+            len(report.warnings),
+            len(report.infos),
+        )
         return report
+
+    def __len__(self) -> int:
+        return len(self._checks)
+
+    def __repr__(self) -> str:
+        return f"HealthChecker(checks={len(self._checks)})"

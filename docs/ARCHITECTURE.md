@@ -2,9 +2,6 @@
 
 > For the quick-start and high-level overview, see [README.md](README.md).
 > This document targets contributors and layer authors.
->
-> **Single source of truth** — `ARCHITECTURE_v6_patch.md` has been merged
-> into this file and can be deleted.
 
 ---
 
@@ -18,11 +15,13 @@
 6. [Message Protocol](#message-protocol)
 7. [Strategy & Policy System](#strategy--policy-system)
 8. [Incremental Apply](#incremental-apply)
-9. [Data Flow (annotated)](#data-flow-annotated)
-10. [Dependency Graph](#dependency-graph)
-11. [Extension Points](#extension-points)
-12. [Testing Strategy](#testing-strategy)
-13. [Changelog](#changelog)
+9. [Context Layer](#context-layer)
+10. [Health Check System](#health-check-system)
+11. [Data Flow (annotated)](#data-flow-annotated)
+12. [Dependency Graph](#dependency-graph)
+13. [Extension Points](#extension-points)
+14. [Testing Strategy](#testing-strategy)
+15. [Changelog](#changelog)
 
 ---
 
@@ -40,136 +39,91 @@ This config is built like a compiler front-end:
 | Linker            | `LayerStack.resolve()`         |
 | Runtime           | qutebrowser's config API       |
 
-The result: config is **data** flowing through **transforms**, not imperative
-Python statements scattered across a file.
+The result: config is **data** flowing through **transforms**, not imperative Python statements scattered across a file.
 
 ### Core Principles
 
-**Dependency Inversion** — every module depends on an abstraction, not a
-concrete. `LayerStack` depends on `LayerProtocol`, not `BaseLayer`.
-`ConfigOrchestrator` depends on `LifecycleManager`, not specific hooks.
+**Dependency Inversion** — every module depends on an abstraction, not a concrete. `LayerStack` depends on `LayerProtocol`, not `BaseLayer`. `ConfigOrchestrator` depends on `LifecycleManager`, not specific hooks.
 
-**Single Source of Truth** — state transitions live in `state.py::TRANSITIONS`.
-Theme colors live in `ColorScheme` dataclasses. Host rules live in
-`policies/host.py`. Nothing is duplicated.
+**Single Source of Truth** — state transitions live in `state.py::TRANSITIONS`. Theme colors live in `ColorScheme` dataclasses. Host rules live in `policies/host.py`. Nothing is duplicated.
 
-**Open/Closed** — adding a layer, strategy, policy, or pipeline stage never
-modifies existing code. Registration is the extension mechanism.
+**Open/Closed** — adding a layer, strategy, policy, or pipeline stage never modifies existing code. Registration is the extension mechanism.
 
-**Pure Build** — `layer.build()` and `layer.validate()` are pure functions.
-No side effects. This makes them testable without a running browser.
+**Pure Build** — `layer.build()` and `layer.validate()` are pure functions. No side effects. This makes them testable without a running browser.
 
-**Explicit State** — the FSM (`ConfigStateMachine`) owns all lifecycle state.
-No flags scattered across objects. Every transition is declared in a table.
+**Explicit State** — the FSM (`ConfigStateMachine`) owns all lifecycle state. No flags scattered across objects. Every transition is declared in a table.
+
+**Observable** — every meaningful phase emits events (MetricsEvent, ConfigReloadedEvent, SnapshotTakenEvent, PolicyDeniedEvent). Zero coupling between emitter and observer.
 
 ---
 
 ## Module Map
 
 ```
-config.py                     ← entry point (single file qutebrowser loads)
-orchestrator.py               ← composition root; wires everything
+config.py               ← entry point (qutebrowser loads ONLY this)
+orchestrator.py         ← composition root
 
 core/
-  layer.py       LayerProtocol, BaseConfigLayer, LayerStack, LayerRecord
-  pipeline.py    PipeStage, Pipeline, ConfigPacket, LogStage, ValidateStage
-  state.py       ConfigState, ConfigEvent, ConfigStateMachine
-  lifecycle.py   LifecycleHook, LifecycleManager, LifecyclePhase
-  protocol.py    MessageRouter, EventBus, CommandBus, QueryBus
-                 Event, LayerAppliedEvent, ConfigErrorEvent, ThemeChangedEvent
-                 ContextSwitchedEvent, HealthReportReadyEvent  [v5+]
-  strategy.py    Strategy, StrategyRegistry, Policy, PolicyChain, PolicyDecision
-                 ReadOnlyPolicy, TypeEnforcePolicy, RangePolicy, AllowlistPolicy
-                 MergeStrategy.*
-  incremental.py SnapshotStore, IncrementalApplier
-  health.py      HealthCheck, HealthChecker, HealthReport, HealthIssue, Severity
+  pipeline.py           ← ConfigPacket + PipeStage + Pipeline
+  state.py              ← ConfigStateMachine (FSM)
+  lifecycle.py          ← LifecycleManager (hook phases)
+  protocol.py           ← MessageRouter (EventBus / CommandBus / QueryBus)
+  layer.py              ← LayerProtocol + LayerStack + BaseConfigLayer
+  strategy.py           ← Strategy + Policy + PolicyChain
+  incremental.py        ← ConfigSnapshot + ConfigDiffer + IncrementalApplier
+  health.py             ← HealthCheck + HealthChecker + HealthReport
 
 layers/
-  base.py        BaseLayer           [priority=10]
-  privacy.py     PrivacyLayer        [priority=20]   PrivacyProfile
-  appearance.py  AppearanceLayer     [priority=30]   ColorScheme, THEMES
-  behavior.py    BehaviorLayer       [priority=40]   HostPolicy
-  context.py     ContextLayer        [priority=45]   ContextMode, ContextSpec  [v5+]
-  performance.py PerformanceLayer    [priority=50]   PerformanceProfile
-  user.py        UserLayer           [priority=90]
+  base.py        [p=10] ← foundational defaults
+  privacy.py     [p=20] ← security, tracking protection
+  appearance.py  [p=30] ← theme, fonts, colors
+  behavior.py    [p=40] ← UX, keybindings, per-host rules
+  context.py     [p=45] ← situational mode (work/research/media/dev/writing/gaming)
+  performance.py [p=50] ← cache & rendering tuning
+  user.py        [p=90] ← personal overrides (highest)
 
 strategies/
-  merge.py       LastWins, FirstWins, DeepMerge, ProfileAware
-  profile.py     UnifiedProfile, ProfileStrategy, ProfileResolution
-  search.py      BaseSearch, DevSearch, PrivacySearch, ChineseSearch, …
-  download.py    NoDispatcher, XdgOpen, Rifle, AutoDetect
+  merge.py search.py profile.py download.py
 
 policies/
-  content.py     JS, Cookie, Autoplay, Canvas, LocalStorage, WebRTC policies
-  network.py     DnsPrefetch, Referrer, Proxy, HttpsOnly policies
-  security.py    Geolocation, MediaCapture, Notification, Clipboard, MixedContent
-  host.py        HostRule, HostPolicyRegistry, ALWAYS/DEV/LOGIN/SOCIAL/MEDIA rules
+  content.py network.py security.py host.py
 
 themes/
-  extended.py    nord, dracula, solarized-*, one-dark, everforest-dark, …
+  extended.py           ← 18+ color schemes
 
 keybindings/
-  catalog.py     KeybindingCatalog, KeybindingEntry (query + conflict detection)
-
-scripts/
-  install.sh          deployment script
-  context_switch.py   runtime context switching (6 modes)
-  gen_keybindings.py  auto-generates KEYBINDINGS.md
-  readability.py      userscript: reader mode
-  password.py         userscript: pass integration
-  open_with.py        userscript: open with external app
-  search_sel.py       userscript: search selected text
-  tab_restore.py      userscript: save/restore tab sessions
-
-tests/
-  test_architecture.py  unit tests covering all core modules
-  test_incremental.py   incremental apply + snapshot tests
-  test_health.py        health check tests (12 checks)
-  test_extensions.py    extension/layer tests
+  catalog.py            ← query + conflict detection
 ```
 
 ---
 
 ## Layer System
 
-```
-LayerProtocol (ABC)
-  ├── name: str
-  ├── priority: int
-  ├── description: str
-  ├── build() → ConfigDict          [pure, required]
-  ├── validate(data) → List[str]   [pure, optional]
-  └── pipeline() → Optional[Pipeline]
+Layers are **pure** configuration providers. Each layer:
 
-BaseConfigLayer (implements LayerProtocol)
-  ├── build() → calls _settings(), _keybindings(), _aliases()
-  │             assembles ConfigDict{"settings":{}, "keybindings":[], "aliases":{}}
-  ├── validate(data) → checks required keys present
-  ├── _settings() → ConfigDict     [override in subclass]
-  ├── _keybindings() → List[Tuple] [override in subclass]
-  └── _aliases() → ConfigDict      [override in subclass]
+1. Declares a unique `name` and integer `priority`
+2. Implements `_settings() → ConfigDict`
+3. Optionally implements `_keybindings()`, `_aliases()`
+4. Optionally provides a `pipeline()` for post-processing its own output
 
-LayerStack
-  ├── register(layer) → ordered by priority
-  ├── resolve() → Dict[name, ConfigPacket]  (runs pipeline per layer)
-  └── merged → ConfigDict  (deep merge result, highest priority wins)
-```
+`LayerStack.resolve()` merges them in priority order (lowest first). Higher priority layers override lower-priority keys.
 
-### Layer Priority Contract
+### Merge Semantics
 
-| Priority | Layer       | Notes                                          |
-| -------- | ----------- | ---------------------------------------------- |
-| 10       | base        | Foundational defaults; lowest priority         |
-| 20       | privacy     | Overrides base security stance                 |
-| 30       | appearance  | Theme, colors, fonts                           |
-| 40       | behavior    | UX patterns, keybindings, non-dev host rules   |
-| 45       | context     | Situational mode delta (work/research/dev/…)   |
-| 50       | performance | Cache, rendering, resource limits              |
-| 60–80    | *(reserved)*| User-added layers without touching existing    |
-| 90       | user        | Personal overrides; highest priority; wins all |
+- **dict values** are deep-merged (e.g. `url.searchengines`, `hints.padding`)
+- **all other values** replace — the highest-priority layer wins
 
-**Keybindings accumulate** across all layers (each layer's bindings are merged
-additively).  **All other settings replace** — the highest-priority layer wins.
+### Priority Table
+
+| Layer       | Priority | Purpose                          |
+| ----------- | -------- | -------------------------------- |
+| base        | 10       | Foundational defaults            |
+| privacy     | 20       | Security & tracking protection   |
+| appearance  | 30       | Theme, fonts, colors             |
+| behavior    | 40       | UX, keybindings, per-host rules  |
+| context     | 45       | Situational mode overrides       |
+| performance | 50       | Cache & rendering tuning         |
+| user        | 90       | Personal overrides (always wins) |
 
 ---
 
@@ -199,18 +153,6 @@ Built-in stages:
   MergeStage       → merges a static overlay dict into packet data
 ```
 
-Custom stages plug in via `layer.pipeline()`:
-
-```python
-def pipeline(self) -> Pipeline:
-    return (
-        Pipeline("mylayer")
-        .pipe(LogStage("pre"))
-        .pipe(ValidateStage({"my.key": lambda v: isinstance(v, bool)}))
-        .pipe(LogStage("post"))
-    )
-```
-
 ---
 
 ## State Machine
@@ -236,9 +178,6 @@ Events:
   RESET         *         → IDLE
 ```
 
-The FSM is the single source of truth for "where are we in loading?".
-Observer callbacks fire on every transition.
-
 ---
 
 ## Message Protocol
@@ -251,8 +190,14 @@ EventBus   — fire-and-forget; zero or many subscribers
   ConfigErrorEvent(error_msg, layer_name)
   ThemeChangedEvent(theme_name)
   BindingRegisteredEvent(key, command, mode)
-  ContextSwitchedEvent(old_context, new_context)   [v5+]
-  HealthReportReadyEvent(ok, error_count, …)       [v5+]
+  ContextSwitchedEvent(old_context, new_context)
+  HealthReportReadyEvent(ok, error_count, warning_count, info_count)
+  ─── v9 new ───────────────────────────────────────────────────────
+  ConfigReloadedEvent(changes_count, errors_count, duration_ms)
+  SnapshotTakenEvent(label, key_count, version)
+  LayerConflictEvent(key, winner_layer, loser_layer)
+  PolicyDeniedEvent(key, value, reason, layer_name)
+  MetricsEvent(phase, duration_ms, key_count)
 
 CommandBus — imperative; exactly one handler; may fail
   ApplyLayerCommand(layer_name, priority)
@@ -261,90 +206,85 @@ CommandBus — imperative; exactly one handler; may fail
 
 QueryBus   — request/response; exactly one handler; returns value
   GetMergedConfigQuery()      → Dict[str, Any]
-  GetLayerQuery(name)         → Optional[LayerProtocol]
-  GetHealthReportQuery()      → Optional[HealthReport]  [v5+]
+  GetHealthReportQuery()      → Optional[HealthReport]
+  GetSnapshotQuery(label, index) → Optional[ConfigSnapshot]    ← v9
+  GetLayerDiffQuery(a, b)     → List[ConfigChange]             ← v9
+  GetLayerNamesQuery()        → List[str]                      ← v9
 ```
 
-`MessageRouter` owns all three buses and is the single injection point.
+### v9 Event Semantics
+
+| Event                 | When emitted                                     | Subscriber use                     |
+| --------------------- | ------------------------------------------------ | ---------------------------------- |
+| `ConfigReloadedEvent` | End of `orchestrator.reload()`                   | Display reload stats in status bar |
+| `SnapshotTakenEvent`  | `IncrementalApplier.record()` called             | Audit trail, debug logging         |
+| `LayerConflictEvent`  | Layer key override detected in `LayerStack`      | Conflict detection, tooling        |
+| `PolicyDeniedEvent`   | PolicyChain returns `DENY` in `apply_settings()` | Security audit, policy debugging   |
+| `MetricsEvent`        | End of build/apply/reload/host_policies phase    | Performance monitoring, profiling  |
 
 ---
 
 ## Strategy & Policy System
 
-**Strategy** — selects and applies an algorithm:
-
 ```
-StrategyRegistry.apply(name, context) → T
+Strategy[T]
+  name: str
+  apply(context: ConfigDict) → T
+  can_handle(context: ConfigDict) → bool  # optional guard
+
+StrategyRegistry[T]
+  register(strategy) → self
+  get(name) → Strategy[T]
+  apply(name, context) → T
+  auto_select(context) → Optional[Strategy[T]]
+
+Policy
+  evaluate(key, value, context) → PolicyDecision
+  PolicyDecision.action: ALLOW | MODIFY | DENY | WARN
+  PolicyDecision.modified_value: Any   # used by MODIFY
+  PolicyDecision.reason: str
+
+PolicyChain
+  policies: List[Policy]           (ordered; first DENY wins)
+  evaluate(key, value, ctx) → PolicyDecision
+
+Built-in policies:
+  ReadOnlyPolicy(keys)             → DENY writes to those keys
+  TypeEnforcePolicy(key, type)     → DENY wrong-type values
+  RangePolicy(key, min, max)       → DENY out-of-range numbers
+  AllowlistPolicy(key, values)     → DENY values not in list
 ```
-
-Used for: merge algorithm selection, search engine set, download dispatcher.
-
-**Policy** — gates or transforms a single key/value:
-
-```
-PolicyChain.evaluate(key, value, context) → PolicyDecision
-PolicyDecision.action: ALLOW | DENY | MODIFY | WARN
-```
-
-Used for: enforcing privacy profile constraints, security hard limits.
-
-Policy chains run *after* `LayerStack.resolve()` and *before*
-`ConfigApplier.apply_settings()`. This means even a UserLayer (priority=90)
-override can be blocked by a PARANOID policy.
 
 ---
 
-## Host Policy System
+## Incremental Apply
 
-Per-host overrides are managed via two complementary sources:
+Hot-reload (`:config-source`) re-runs `config.py` from scratch. The `IncrementalApplier` + `SnapshotStore` reduce the cost:
 
 ```
-Source 1 — HostPolicyRegistry (policies/host.py)
-  ALWAYS_RULES  → file://* (local HTML)          [always loaded]
-  DEV_RULES     → localhost, 127.0.0.1, [::1], *.local  [HOST_POLICY_DEV]
-  LOGIN_RULES   → *.google.com, accounts.google.com, *.github.com, *.gitlab.com
-  SOCIAL_RULES  → discord.com, *.notion.so, bilibili.com
-  MEDIA_RULES   → youtube.com, *.twitch.tv
-
-Source 2 — BehaviorLayer.host_policies() (layers/behavior.py)
-  login/social rules as lightweight fallback
-  ⚠ Dev/localhost rules removed from BehaviorLayer in v7 (deduplication fix)
-
-Orchestrator applies Source 1 first, then Source 2 for patterns not already
-covered by Source 1 — no double application.
+SnapshotStore.record(settings, label)   ← stores snapshot (ring buffer, max 10)
+ConfigDiffer.diff(old, new)             ← returns List[ConfigChange]
+IncrementalApplier.compute_delta()      ← diff latest two snapshots
+IncrementalApplier.apply_delta(changes, apply_fn)
+                                        ← call apply_fn(k, v) only for ADDED/CHANGED
+IncrementalApplier.rollback(steps, apply_fn)
+                                        ← revert to snapshot N steps back  ← v9
 ```
 
-Controlled in `config.py`:
+### v9 apply_delta() fix
+
+`apply_fn` type corrected to `Callable[[str, Any], List[str]]` (returns errors).
+Previously typed as returning `None` — the return value from the lambda in
+`orchestrator.reload()` was silently discarded. Now errors are accumulated and
+returned from `apply_delta()`.
+
+### Snapshot Query
 
 ```python
-HOST_POLICY_DEV    = True   # localhost / 127.0.0.1 / [::1] / *.local
-HOST_POLICY_LOGIN  = True   # Google, GitHub, GitLab
-HOST_POLICY_SOCIAL = True   # Discord, Notion, Bilibili
-HOST_POLICY_MEDIA  = True   # YouTube, Twitch
+# Introspect via QueryBus:
+snap = router.ask(GetSnapshotQuery(label="pre-reload"))
+diff = router.ask(GetLayerDiffQuery(label_a="pre-reload", label_b="post-reload"))
 ```
-
----
-
-## Health Check System
-
-`HealthChecker.default()` runs **12 checks** after `apply()`:
-
-| Check                   | Key                                    | Severity |
-| ----------------------- | -------------------------------------- | -------- |
-| `BlockingEnabledCheck`  | `content.blocking.enabled`             | WARNING  |
-| `BlockingListCheck`     | `content.blocking.adblock.lists`       | WARNING  |
-| `SearchEngineDefault`   | `url.searchengines["DEFAULT"]`         | ERROR    |
-| `SearchEngineUrl`       | All engine URL templates               | ERROR    |
-| `WebRTCPolicyCheck`     | `content.webrtc_ip_handling_policy`    | WARNING  |
-| `CookieAcceptCheck`     | `content.cookies.accept`               | WARNING  |
-| `StartPageCheck`        | `url.start_pages`                      | WARNING  |
-| `EditorCommandCheck`    | `editor.command` (list + `{}`)         | ERROR    |
-| `DownloadDirCheck`      | `downloads.location.directory`         | WARNING  |
-| `TabTitleFormatCheck`   | `tabs.title.format`                    | INFO     |
-| `ProxySchemeCheck`      | `content.proxy`                        | ERROR    |
-| `ZoomDefaultCheck`      | `zoom.default`                         | ERROR/W  |
-
-Health issues appear in qutebrowser's message bar and the log.
 
 ---
 
@@ -367,30 +307,50 @@ Health issues appear in qutebrowser's message bar and the log.
 
 ### Contexts
 
-| Mode     | Key     | Description                                    |
-| -------- | ------- | ---------------------------------------------- |
-| default  | `,C0`   | Base settings, no overrides                    |
-| work     | `,Cw`   | Corporate tools, Google default engine         |
-| research | `,Cr`   | arXiv, Scholar, Wikipedia, Brave engine        |
-| media    | `,Cm`   | YouTube, Bilibili, Twitch; autoplay ON         |
-| dev      | `,Cd`   | GitHub, MDN, DevDocs, npm, crates.io           |
-| writing  | `,Cwt`  | Dict, thesaurus, grammar; minimal UI           |
+| Mode     | Key    | Description                             |
+| -------- | ------ | --------------------------------------- |
+| default  | `,C0`  | Base settings, no overrides             |
+| work     | `,Cw`  | Corporate tools, Google default engine  |
+| research | `,Cr`  | arXiv, Scholar, Wikipedia, Brave engine |
+| media    | `,Cm`  | YouTube, Bilibili, Twitch; autoplay ON  |
+| dev      | `,Cd`  | GitHub, MDN, DevDocs, npm, crates.io    |
+| writing  | `,Cwt` | Dict, thesaurus, grammar; minimal UI    |
+| gaming   | `,Cg`  | Steam, Twitch, ProtonDB, AreWeGameYet   |
 
 ---
 
-## Incremental Apply
+## Health Check System
 
-Hot-reload (`:config-source`) re-runs `config.py` from scratch.
-The `IncrementalApplier` + `SnapshotStore` reduce the cost:
+18 built-in checks (v9):
 
+| Check                   | Severity | What it validates                                  |
+| ----------------------- | -------- | -------------------------------------------------- |
+| `blocking_enabled`      | WARNING  | content.blocking.enabled should be True            |
+| `blocking_lists`        | WARNING  | adblock.lists must be non-empty                    |
+| `search_engine_default` | ERROR    | url.searchengines must have DEFAULT key            |
+| `search_engine_urls`    | ERROR    | all engine URLs must contain `{}`                  |
+| `webrtc_policy`         | WARNING  | WebRTC IP leak risk                                |
+| `cookie_accept`         | INFO     | all-cookie-accept is informational                 |
+| `start_pages`           | WARNING  | url.start_pages should not be empty                |
+| `editor_command`        | ERROR    | editor.command must be list with `{}`              |
+| `download_dir`          | WARNING  | directory should not be /tmp                       |
+| `tab_title_format`      | WARNING  | should reference `{current_title}`                 |
+| `proxy_scheme`          | ERROR    | proxy must start with a valid scheme               |
+| `zoom_default`          | ERROR    | must end with `%`                                  |
+| `font_family`           | WARNING  | must not be empty string                           |
+| `spellcheck_langs`      | WARNING  | entries should look like BCP-47 tags               |
+| `content_user_agent`    | WARNING  | user_agent should not be empty string              |
+| `search_engine_count`   | WARNING  | >50 engines is usually a misconfiguration ← **v9** |
+| `proxy_scheme_detail`   | WARNING  | socks5/http must have host:port format ← **v9**    |
+| `download_prompt`       | INFO     | prompt=False with default ~/Downloads ← **v9**     |
+
+Custom checks can be injected:
+
+```python
+checker = HealthChecker.default().add(MyCustomCheck())
+# Or compose from scratch:
+checker = HealthChecker.with_checks(SearchEngineDefaultCheck(), MyCheck())
 ```
-SnapshotStore.record(settings, label)  ← stores snapshot
-IncrementalApplier.compute_delta()     ← diff current vs previous
-IncrementalApplier.apply_delta(delta)  ← call config.set() only for changed keys
-```
-
-If no snapshot exists (first load), all keys are applied.
-On reload, only changed keys are re-set — unchanged settings are skipped.
 
 ---
 
@@ -402,21 +362,16 @@ qutebrowser forks Python → loads config.py
     ├─ sys.path.insert(0, config_dir)  ← makes core/, layers/ importable
     │
     └─ _build_orchestrator()
-           ├─ MessageRouter()
+           ├─ MessageRouter()          ← EventBus + CommandBus + QueryBus
            ├─ LifecycleManager()
            ├─ ConfigStateMachine()
-           ├─ build_default_host_registry(
-           │      include_dev    = HOST_POLICY_DEV,   ← v7: was missing
-           │      include_login  = HOST_POLICY_LOGIN,
-           │      include_social = HOST_POLICY_SOCIAL,
-           │      include_media  = HOST_POLICY_MEDIA,
-           │  )
+           ├─ build_default_host_registry(...)
            └─ LayerStack()
                  ├─ register(BaseLayer())           [p=10]
                  ├─ register(PrivacyLayer())         [p=20]
                  ├─ register(AppearanceLayer())      [p=30]
                  ├─ register(BehaviorLayer())        [p=40]
-                 ├─ register(ContextLayer())         [p=45]  ← if LAYERS["context"]
+                 ├─ register(ContextLayer())         [p=45]  ← if enabled
                  ├─ register(PerformanceLayer())     [p=50]
                  └─ register(UserLayer())            [p=90]
 
@@ -425,41 +380,57 @@ orchestrator.build()
     ├─ lifecycle.run(PRE_INIT)
     ├─ LayerStack.resolve()
     │     for layer in sorted(priority):
-    │       raw   = layer.build()           ← pure Python dict
-    │       errs  = layer.validate(raw)     ← pure: [] or ["err"]
+    │       raw   = layer.build()
+    │       errs  = layer.validate(raw)
     │       pkt   = ConfigPacket(raw, errs)
     │       pkt   = layer.pipeline().run(pkt)  if pipeline
     │       merged = deep_merge(merged, pkt.data)
     ├─ fsm.send(LOAD_DONE) → LOADING→VALIDATING
     ├─ fsm.send(VALIDATE_DONE) → VALIDATING→APPLYING
-    └─ lifecycle.run(POST_INIT)
+    ├─ lifecycle.run(POST_INIT)
+    └─ router.emit_metrics("build", duration_ms, key_count)   ← v9
 
 orchestrator.apply(applier)
     ├─ lifecycle.run(PRE_APPLY)
-    ├─ applier.apply_settings(merged["settings"])
+    ├─ applier.apply_settings(merged["settings"], policy_chain, router)
     │     for k, v in settings.items():
-    │       # policy chain evaluation (if configured)
-    │       config.set(k, v)
+    │       decision = policy_chain.evaluate(k, v, {})
+    │       if DENY: router.emit_policy_denied(k, v, reason)  ← v9
+    │       config.set(k, applied_value)
     ├─ applier.apply_keybindings(merged["keybindings"])
-    │     for key, cmd, mode in bindings:
-    │       config.bind(key, cmd, mode=mode)
     ├─ applier.apply_aliases(merged["aliases"])
-    │     for name, cmd in aliases.items():
-    │       c.aliases[name] = cmd
-    ├─ router.emit(LayerAppliedEvent(layer_name, key_count))
+    ├─ router.emit(LayerAppliedEvent(...)) per layer
     ├─ HealthChecker.default().check(settings) → HealthReport
     ├─ router.emit_health(...)
     ├─ fsm.send(APPLY_DONE) → APPLYING→ACTIVE
-    └─ lifecycle.run(POST_APPLY)
+    ├─ lifecycle.run(POST_APPLY)
+    └─ router.emit_metrics("apply", duration_ms, key_count)   ← v9
 
 orchestrator.apply_host_policies(applier)
     ├─ for rule in HostPolicyRegistry.active():
     │     config.set(k, v, pattern=rule.pattern)
-    │     registry_patterns.add(rule.pattern)
-    └─ for policy in BehaviorLayer.host_policies():
-          if policy.pattern NOT in registry_patterns:
-            config.set(k, v, pattern=policy.pattern)
-          # ← v7: skip duplicates to avoid double-application
+    ├─ for policy in BehaviorLayer.host_policies():
+    │     if pattern NOT in registry_patterns:
+    │       config.set(k, v, pattern=policy.pattern)
+    └─ router.emit_metrics("host_policies", ...)              ← v9
+
+orchestrator.reload(applier)    ← hot-reload path
+    ├─ fsm.send(RELOAD) → ACTIVE→RELOADING
+    ├─ lifecycle.run(PRE_RELOAD)
+    ├─ incremental_applier.record(current_settings, "pre-reload")
+    ├─ router.emit_snapshot("pre-reload", key_count, version) ← v9
+    ├─ orchestrator.build()
+    ├─ incremental_applier.record(new_settings, "post-reload")
+    ├─ router.emit_snapshot("post-reload", ...)               ← v9
+    ├─ changes = incremental_applier.compute_delta()
+    ├─ incremental_applier.apply_delta(changes, apply_fn)
+    │     apply_fn(k, v) → List[str]  (errors)               ← v9 fix
+    ├─ applier.apply_keybindings(merged["keybindings"])
+    ├─ applier.apply_aliases(merged["aliases"])
+    ├─ orchestrator.apply_host_policies(applier)              ← v9 new
+    ├─ router.emit_reload(changes_count, errors_count, ms)    ← v9
+    ├─ router.emit_metrics("reload", ...)                     ← v9
+    └─ lifecycle.run(POST_RELOAD)
 ```
 
 ---
@@ -485,136 +456,183 @@ config.py
 
 **Invariant**: `layers/*` never imports from `layers/*`.
 **Invariant**: `core/*` never imports from `layers/*` or `strategies/*`.
-Violations of these invariants are bugs.
+Violations are bugs.
 
 ---
 
 ## Extension Points
 
-| What to add             | Where                        | Register in                     |
-| ----------------------- | ---------------------------- | ------------------------------- |
-| New configuration layer | `layers/myfeature.py`        | `config.py` LAYERS dict         |
-| New theme               | `themes/extended.py`         | auto via import                 |
-| New merge algorithm     | `strategies/merge.py`        | `build_merge_registry()`        |
-| New search engine set   | `strategies/search.py`       | `build_search_registry()`       |
-| New privacy policy rule | `policies/content.py`        | `build_content_policy_chain()`  |
-| New host exception      | `policies/host.py`           | `build_default_host_registry()` |
-| New pipeline stage      | `core/pipeline.py` or inline | `layer.pipeline()`              |
-| New lifecycle hook      | `config.py` wiring section   | `@lifecycle.on(phase)`          |
-| New FSM event           | `core/state.py` TRANSITIONS  | declare + send()                |
-| New context mode        | `layers/context.py`          | `_CONTEXT_TABLE`                |
-| New health check        | `core/health.py`             | `HealthChecker.default()`       |
+### Add a Layer
+
+```python
+# layers/work.py
+from core.layer import BaseConfigLayer
+class WorkLayer(BaseConfigLayer):
+    name = "work"; priority = 60
+    def _settings(self):
+        return {"url.searchengines": {"DEFAULT": "https://intranet.co?q={}"}}
+```
+
+Register in `config.py`'s `_build_orchestrator()`.
+
+### Add a Per-Host Rule
+
+Add a `HostRule(…)` to the appropriate list in `policies/host.py`.
+
+### Add a Custom Context
+
+Add a `ContextSpec(…)` to `_CONTEXT_TABLE` in `layers/context.py`.
+
+### Add a Health Check
+
+```python
+from core.health import HealthCheck, HealthIssue, Severity
+class MyCheck(HealthCheck):
+    name = "my_check"
+    def check(self, config):
+        if config.get("my.key") == "bad":
+            return self._error("my.key must not be 'bad'")
+        return None
+
+# Inject for one run:
+checker = HealthChecker.default().add(MyCheck())
+# Or compose:
+checker = HealthChecker.with_checks(MyCheck())
+```
+
+### Subscribe to Reload Events (v9)
+
+```python
+def _on_reload(e: Event) -> None:
+    if isinstance(e, ConfigReloadedEvent):
+        print(f"Reloaded: {e.changes_count} changes in {e.duration_ms:.1f}ms")
+
+router.events.subscribe(ConfigReloadedEvent, _on_reload)
+```
+
+### Introspect Config via QueryBus (v9)
+
+```python
+# Get merged config
+merged = router.ask(GetMergedConfigQuery())
+
+# Get snapshot by label
+snap = router.ask(GetSnapshotQuery(label="pre-reload"))
+
+# Get diff between two snapshots
+diff = router.ask(GetLayerDiffQuery(label_a="pre-reload", label_b="post-reload"))
+for change in diff:
+    print(change)
+
+# Get registered layer names
+names = router.ask(GetLayerNamesQuery())
+```
 
 ---
 
 ## Testing Strategy
 
-Tests are **pure Python** — no qutebrowser process required.
-All layer `build()` methods are tested in isolation.
-
 ```
 tests/
-  test_architecture.py   unit tests covering all core modules
-    ├── TestPipeline         pipeline fold, LogStage, ValidateStage
-    ├── TestStateMachine     transitions, invalid transitions, observers
-    ├── TestMessageRouter    EventBus, CommandBus, QueryBus
-    ├── TestLifecycle        hook ordering, error isolation
-    ├── TestLayerStack       priority order, merge semantics
-    ├── TestBaseLayer        build, validate, keybindings
-    ├── TestAppearanceLayer  all themes, color key presence
-    ├── TestPrivacyLayer     all profiles, cookie/JS gating
-    ├── TestFullStack        end-to-end resolve + merge
-    └── TestStrategy         PolicyChain decisions
-
-  test_incremental.py    incremental apply + snapshot tests
-    ├── SnapshotStore        record, retrieve, max_history
-    ├── IncrementalApplier   delta compute, apply, error handling
-    └── integration          full load→record→reload→delta cycle
-
-  test_health.py         health check tests
-    ├── all 15 built-in checks  (v8: +FontFamilyCheck, SpellcheckLangCheck, ContentHeaderCheck)
-    └── HealthChecker.default()
-
-  test_extensions.py     extension/layer tests
+  test_architecture.py    ← Layer / Stack / Orchestrator integration
+  test_incremental.py     ← ConfigDiffer, IncrementalApplier, SnapshotStore
+  test_extensions.py      ← Context, strategies, host policies
+  test_health.py          ← All 18 health checks
 ```
 
-Run all tests:
+### Test isolation
 
-```bash
-pytest tests/ -v
-# or
-python3 -m pytest tests/ -v
-```
+- `EventBus.unsubscribe_all()` clears all subscribers (v9).
+- `SnapshotStore.clear()` resets snapshot history.
+- `CommandBus(allow_replace=True)` allows test overrides.
+- `HealthChecker.with_checks(...)` composes targeted check sets.
 
 ---
 
 ## Changelog
 
-### v8 (current)
+### v9 (current)
 
-**Bug fixes:**
+**protocol.py**
 
-| File | Bug | Fix |
-|------|-----|-----|
-| `core/health.py` | `CookieAcceptCheck` emitted `Severity.WARNING`; test contract was `INFO` | Changed to `Severity.INFO` |
-| `core/health.py` | `DownloadDirCheck` only matched exact `/tmp` and `/var/tmp`; `/tmp/downloads` passed silently | Added `startswith(prefix + os.sep)` guard for subdirectory coverage |
-| `core/health.py` | `SearchEngineDefaultCheck` only errored when `url.searchengines` was a dict without `DEFAULT`; when key was absent entirely (`None`), no issue was raised | Condition extended: `engines is None or (isinstance(engines, dict) and "DEFAULT" not in engines)` |
+- New events: `ConfigReloadedEvent`, `SnapshotTakenEvent`, `LayerConflictEvent`, `PolicyDeniedEvent`, `MetricsEvent`
+- New queries: `GetSnapshotQuery`, `GetLayerDiffQuery`, `GetLayerNamesQuery`
+- `EventBus.unsubscribe_all()` for test isolation
+- `CommandBus(allow_replace=True)` for test overrides
+- `MessageRouter` convenience emitters: `emit_reload`, `emit_snapshot`, `emit_conflict`, `emit_policy_denied`, `emit_metrics`
 
-**New features:**
+**orchestrator.py**
 
-- **`core/health.py`**: Added 3 new checks — `FontFamilyCheck` (warns on empty `fonts.default_family`), `SpellcheckLangCheck` (validates BCP-47 tags in `spellcheck.languages`), `ContentHeaderCheck` (warns on empty `content.headers.user_agent`). Total: 15 checks.
-- **`layers/context.py`**: Added `GAMING` context (`ContextMode.GAMING`) — Steam, Twitch, ProtonDB, AreWeGameYet, Lutris search; `content.autoplay=True`; `content.fullscreen.window=True`. Switched with `,Cg`.
-- **`scripts/context_switch.py`**: Added `gaming` to `VALID_CONTEXTS` and `_CONTEXT_LABELS`.
-- **`layers/user.py`**: Added `font_family`, `font_size`, `font_size_ui` constructor parameters — first-class font override API. Previously required the `extra_settings` escape hatch. Maps to `fonts.default_family`, `fonts.default_size`, `fonts.web.size.default`.
-- **`layers/user.py`**: Empty `editor=[]` list is now silently skipped (previously would have written an invalid value that `EditorCommandCheck` would flag as an error).
-- **`orchestrator.py`**: `reload()` now uses `IncrementalApplier` for delta-only hot-reload. Before rebuilding, a snapshot of current settings is taken; after rebuild, only changed/added keys are re-applied. Keybindings and aliases are always re-applied. On first call (no prior snapshot), full apply() is used as fallback.
-- **`orchestrator.py`**: `ConfigOrchestrator` owns a `SnapshotStore(max_history=10)` and `IncrementalApplier`.
-- **`config.py`**: Added `USER_FONT_FAMILY`, `USER_FONT_SIZE`, `USER_FONT_SIZE_UI` variables. Wired into `UserLayer(...)`.
-- **`config.py`**: Added `HealthReportReadyEvent` subscriber — logs detailed warning on errors, brief info on warnings/infos, silent on clean.
+- `build()` / `apply()` / `reload()` emit `MetricsEvent` with timing
+- `reload()` now re-applies host policies (was skipped previously)
+- `reload()` falls back to `self._applier` stored from `apply()`
+- `apply_settings()` forwards `router` for DENY event propagation
+- QueryBus handlers: `GetSnapshotQuery`, `GetLayerDiffQuery`, `GetLayerNamesQuery`
+- `_handle_get_layer_names` reads `stack._layers` ordered by priority
+- `summary()` includes timing metrics from last run
+
+**incremental.py**
+
+- `apply_delta()` `apply_fn` type corrected: `Callable[[str, Any], List[str]]` (was `None`)
+- `apply_delta()` accumulates and returns errors from all `apply_fn` calls
+- `IncrementalApplier.rollback(steps, apply_fn)` added
+- `ConfigDiffer` promoted to top-level public class
+- `SnapshotStore.snapshots` property added (was private `_snapshots`)
+- `SnapshotStore.find(label)` added
+- `SnapshotStore.clear()` added (test teardown)
+
+**health.py**
+
+- 3 new checks: `SearchEngineCountCheck`, `ProxySchemeDetailCheck`, `DownloadPromptCheck`
+- `HealthReport.summary()` now categorised multi-line output
+- `HealthChecker.check()` accepts `extra_checks` parameter
+- `HealthChecker.with_checks(*checks)` factory method added
+
+**behavior.py**
+
+- Caret mode bindings: H/L word nav, V select-line, y/^C yank, q leave
+- Hint mode: `<escape>` leave hint mode
+- Tab position shortcuts: `<alt-1..9>`
+- New tab bindings: `,t` (new tab), `,T` (clone tab), `,q` / `,Q`
+- Find bar: `,/` and `,?`
+- Passthrough: `<ctrl-v>` enter-mode passthrough
+- Security settings: `local_content_can_access_*` hardened
+- `tabs.select_on_remove`: "prev"
+
+**base.py**
+
+- Added: `content.pdfjs`, `content.javascript.alert/prompt`, `content.javascript.can_open_tabs_automatically`, `tabs.pinned.*`, `content.fullscreen.window`, `qt.force_software_rendering`, `messages.timeout`, `url.default_page`, `content.images`
+
+**config.py**
+
+- New event subscribers: `ConfigReloadedEvent`, `SnapshotTakenEvent`, `PolicyDeniedEvent`, `MetricsEvent`
+- `USER_MESSAGES_TIMEOUT` parameter added
+- `POST_RELOAD` lifecycle hook wired
+- `USER_EXTRA_ALIASES` includes `snap` alias (v9)
+
+### v8 (previous)
+
+- IncrementalApplier integrated into orchestrator.reload()
+- SnapshotStore(max_history=10) owned by orchestrator
+- USER_FONT_FAMILY / USER_FONT_SIZE / USER_FONT_SIZE_WEB first-class params
+- HealthReportReadyEvent subscriber wired in config.py
+- ContextMode.GAMING added
 
 ### v7
 
-**Bug fixes:**
+- HOST_POLICY_DEV bug fix: flag was declared but not passed to registry factory
+- apply_host_policies: BehaviorLayer deduplication vs HostPolicyRegistry
+- BehaviorLayer.host_policies() removes dev/localhost rules (owned by host.py)
 
-| File | Bug | Fix |
-|------|-----|-----|
-| `config.py` | `HOST_POLICY_DEV` flag declared but never passed to `build_default_host_registry` — dev rules always applied regardless of the flag | Passed `include_dev=HOST_POLICY_DEV` to factory |
-| `policies/host.py` | `build_default_host_registry` had no `include_dev` parameter | Added `include_dev: bool = True` parameter + `DEV_RULES` list |
-| `policies/host.py` | `ALWAYS_RULES` contained dev/localhost rules that were *also* in `BehaviorLayer.host_policies()` — silent double-application of same `config.set()` calls | Moved localhost rules to `DEV_RULES`; `ALWAYS_RULES` only contains `file://*` |
-| `layers/behavior.py` | `host_policies()` included dev/localhost rules, duplicating `HostPolicyRegistry.DEV_RULES` | Removed localhost/127.0.0.1 entries; added docstring explaining ownership |
-| `orchestrator.py` | Both `HostPolicyRegistry` and `BehaviorLayer.host_policies()` applied without deduplication | `apply_host_policies` now tracks registry patterns and skips BehaviorLayer duplicates |
-| `orchestrator.py` | Version string said `v5` despite being shipped as part of v6/v7 | Bumped to `v7` |
-| `core/pipeline.py` | `ConfigPacket` field `default_factory` args used generic aliases (`ConfigDict`, `dict[str,Any]`, `list[str]`) which are not callable — Pyright strict error | Changed to bare `dict` and `list` |
+### v6
 
-**Improvements:**
-
-- `policies/host.py`: Added `DEV_RULES` (`[::1]` IPv6 loopback + `*.local` mDNS)
-- `policies/host.py`: `HostPolicyRegistry.summary()` now shows enabled/total counts
-- `policies/host.py`: `HostPolicyRegistry.active()` return type is now a proper `Iterator[HostRule]` generator method
-- `layers/user.py`: `search_engines_merge` branches documented clearly
-- `ARCHITECTURE.md`: Merged `ARCHITECTURE_v6_patch.md` — single source of truth for all version history
-
-### v6 (merged from ARCHITECTURE_v6_patch.md)
-
-**Bug fixes:**
-
-| File | Bug | Fix |
-|------|-----|-----|
-| `layers/base.py` | `downloads.prevent_mixed_content` is not a valid qutebrowser setting | Removed |
-| `layers/context.py` | `_resolve_active_mode` never read the `.context` file written by `context_switch.py` | Reads via `_read_context_file(_default_context_file())` at priority 3 |
-| `config.py` | `USER_PROXY: str` — type mismatch with `UserLayer._validate_proxy(Optional[str])` | Changed to `Optional[str]` |
-
-**New features:**
-- Health checks: `ProxySchemeCheck`, `ZoomDefaultCheck`, `BlockingListCheck` (12 total)
-- Context: `WRITING` mode (`,Cwt`)
-- Behavior: zoom keybindings (`zi`/`zo`/`z0`/`zz`), `<ctrl-tab>`, `gf`/`wf`, `tc`, `,b`, `<ctrl-y>` in prompt
-- Performance: `content.webgl` per profile, `qt.chromium.low_end_device_mode` for LOW, software rendering for LAPTOP
-- Base: `tabs.indicator.*`, `tabs.favicons.scale`, `tabs.title.alignment`, `completion.cmd_history_max_items`
+- ContextLayer added (priority=45); WRITING context
+- \_resolve_active_mode reads .context file (was only env var + constructor)
+- HealthChecker.default() 15 checks (was 12)
+- AppearanceLayer: fonts.default_family/size explicitly set from ColorScheme
 
 ### v5
 
-- `ContextSwitchedEvent`, `HealthReportReadyEvent` events
-- `GetHealthReportQuery`, `GetMergedConfigQuery` queries
-- `ContextLayer` [priority=45] with 5 modes
-- `HealthChecker` system (9 checks)
-- `MessageRouter.emit_health()` helper
+- ContextSwitchedEvent, HealthReportReadyEvent
+- GetHealthReportQuery, GetMergedConfigQuery
+- MessageRouter.emit_health() helper

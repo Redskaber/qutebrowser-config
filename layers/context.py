@@ -101,10 +101,10 @@ class ContextSpec:
         bindings_extra: Additional (key, command, mode) tuples for this context.
     """
     mode:           ContextMode
-    description:    str                                  = ""
-    search_engines: EngineMap                            = field(default_factory=dict)
-    settings_delta: ConfigDict                           = field(default_factory=dict)
-    bindings_extra: List[Tuple[str, str, str]]           = field(default_factory=list)
+    description:    str         = ""
+    search_engines: EngineMap   = field(default_factory=dict[str, str])
+    settings_delta: ConfigDict  = field(default_factory=dict[str, Any])
+    bindings_extra: BindingList = field(default_factory=list[tuple[str, str, str]])
 
 
 # ─────────────────────────────────────────────

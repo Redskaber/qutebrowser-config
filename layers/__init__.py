@@ -16,7 +16,7 @@ Space between 50–90 reserved for user-inserted layers (60–80).
 """
 from layers.base        import BaseLayer
 from layers.privacy     import PrivacyLayer, PrivacyProfile
-from layers.appearance  import AppearanceLayer, ColorScheme, THEMES
+from layers.appearance  import AppearanceLayer, ColorScheme, THEMES, parse_px
 from layers.behavior    import BehaviorLayer, HostPolicy
 from layers.context     import ContextMode, ContextSpec, ContextLayer
 from layers.performance import PerformanceLayer, PerformanceProfile
@@ -25,7 +25,7 @@ from layers.user        import UserLayer
 __all__ = [
     "BaseLayer",
     "PrivacyLayer", "PrivacyProfile",
-    "AppearanceLayer", "ColorScheme", "THEMES",
+    "AppearanceLayer", "ColorScheme", "THEMES", "parse_px",
     "BehaviorLayer", "HostPolicy",
     "ContextMode", "ContextSpec", "ContextLayer",
     "PerformanceLayer", "PerformanceProfile",

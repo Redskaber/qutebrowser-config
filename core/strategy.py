@@ -17,7 +17,7 @@ Patterns: Strategy, Policy, Registry, Chain of Responsibility
 
 Strict-mode notes (Pyright):
   - Removed unused ``field`` and ``Callable`` imports.
-  - ``_recursive_merge`` uses ``Dict[str, Any]`` instead of bare ``dict``.
+  - ``recursive_merge`` uses ``Dict[str, Any]`` instead of bare ``dict``.
   - ``all_decisions`` return type is fully annotated.
   - ``PolicyChain.__init__`` has an explicit ``-> None`` return type.
 """
@@ -270,14 +270,14 @@ class MergeStrategy(Strategy[ConfigDict]):
         def apply(self, context: ConfigDict) -> ConfigDict:
             base:    ConfigDict = context.get("base", {})    # type: ignore[assignment]
             overlay: ConfigDict = context.get("overlay", {}) # type: ignore[assignment]
-            return _recursive_merge(base, overlay)
+            return recursive_merge(base, overlay)
 
     # MergeStrategy itself is abstract; its inner classes are the concrete ones.
     def apply(self, context: ConfigDict) -> ConfigDict:
         raise NotImplementedError("Use MergeStrategy.LastWins, .FirstWins, or .DeepMerge")
 
 
-def _recursive_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
+def recursive_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
     """Recursively merge *overlay* into *base*.  Overlay wins on conflicts."""
     result: Dict[str, Any] = base.copy()
     for k, v in overlay.items():
@@ -285,7 +285,7 @@ def _recursive_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str,
         if isinstance(existing, dict) and isinstance(v, dict):
             existing = cast(Dict[str, Any], existing)
             v = cast(Dict[str, Any], v)
-            result[k] = _recursive_merge(existing, v)
+            result[k] = recursive_merge(existing, v)
         else:
             result[k] = v
     return result

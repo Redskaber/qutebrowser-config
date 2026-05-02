@@ -145,7 +145,7 @@ class KeybindingCatalog:
         Example output:
           | Key       | Command              | Layer    |
           |-----------|----------------------|----------|
-          | <ctrl-d>  | scroll-page 0 0.5   | base     |
+          | <ctrl-d>  | scroll-page 0 0.5    | base     |
           | J         | tab-prev             | behavior |
         """
         entries = self.by_mode(mode)
@@ -166,7 +166,7 @@ class KeybindingCatalog:
 
     def reference_all(self) -> str:
         """Generate reference tables for all modes."""
-        sections = []
+        sections: List[str] = []
         for mode in self.modes():
             sections.append(self.reference_table(mode))
         return "\n".join(sections)

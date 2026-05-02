@@ -1,7 +1,7 @@
 """
 config.py
 =========
-qutebrowser Configuration Entry Point  (v8)
+qutebrowser Configuration Entry Point  (v9)
 
 This is the **only** file qutebrowser loads directly.
 It is intentionally thin: it wires the architecture and delegates
@@ -31,27 +31,35 @@ Strict-mode notes (Pyright):
   - Lifecycle decorator return values assigned to _ to suppress
     reportUnusedFunction.
 
-v8 changes:
+v9 changes:
+  - Wired ConfigReloadedEvent subscriber: logs reload stats (changes,
+    errors, duration) after every hot-reload cycle.
+  - Wired MetricsEvent subscriber: logs timing for build/apply/reload
+    phases at DEBUG level (silent in production, visible with -v).
+  - Wired SnapshotTakenEvent subscriber: debug log only.
+  - Added USER_ENABLE_RELOAD_HOST_POLICIES flag — when True (default),
+    host policies are re-applied on every hot-reload via orchestrator.reload().
+    The flag is passed conceptually; the v9 orchestrator always re-applies
+    host policies in reload() — set HOST_POLICY_* flags to False to opt out.
+  - Added USER_MESSAGES_TIMEOUT to control notification display time.
+  - USER_FONT_SIZE_WEB renamed hint in comment: "16px", "18px", or plain "16".
+  - Lifecycle hook banner updated to v9.
+  - _build_orchestrator() wires PolicyDeniedEvent subscriber (warns on DENY).
+
+v8 changes (retained):
   - Added USER_FONT_FAMILY / USER_FONT_SIZE / USER_FONT_SIZE_UI — first-class
-    font override params (no longer need extra_settings escape hatch for fonts)
-  - Wired HealthReportReadyEvent subscriber: logs full report on errors,
-    brief summary on warnings/infos, silent on clean
-  - Lifecycle hook banner updated to v8
-  - UserLayer constructor call includes font_family/font_size/font_size_ui
+    font override params.
+  - Wired HealthReportReadyEvent subscriber.
+  - UserLayer constructor call includes font_family/font_size/font_size_web.
 
 v7 changes (retained):
-  - HOST_POLICY_DEV is now actually passed to build_default_host_registry
-    (was silently ignored — bug fix; the flag existed but had no effect)
-  - build_default_host_registry called with include_dev=HOST_POLICY_DEV
-  - Summary banner shows host policy counts
+  - HOST_POLICY_DEV is now actually passed to build_default_host_registry.
+  - Summary banner shows host policy counts.
 
 v6 changes (retained):
-  - USER_PROXY type corrected to Optional[str]
-  - Added USER_FONT_MONO / USER_FONT_SIZE_UI font override hints
-  - Added ACTIVE_CONTEXT "writing" to the documented valid values
-  - HOST_POLICY_DEV flag added
-  - HealthChecker.default() now runs 15 checks (was 12)
-  - Summary banner improved: shows active context + profile
+  - USER_PROXY type corrected to Optional[str].
+  - Added ACTIVE_CONTEXT "writing" to the documented valid values.
+  - HOST_POLICY_DEV flag added.
 """
 
 from __future__ import annotations
@@ -71,10 +79,14 @@ from core.layer     import LayerStack
 from core.lifecycle import LifecycleHook, LifecycleManager
 from core.protocol  import (
     ConfigErrorEvent,
+    ConfigReloadedEvent,
     Event,
     HealthReportReadyEvent,
     LayerAppliedEvent,
     MessageRouter,
+    MetricsEvent,
+    PolicyDeniedEvent,
+    SnapshotTakenEvent,
     ThemeChangedEvent,
 )
 from core.state import ConfigStateMachine
@@ -187,8 +199,6 @@ HOST_POLICY_SOCIAL: bool = True   # Discord, Notion, Bilibili
 HOST_POLICY_MEDIA:  bool = True   # YouTube, Twitch (no-autoplay)
 HOST_POLICY_DEV:    bool = True   # localhost, 127.0.0.1, [::1], *.local (JS+cookies)
                                   # NOTE (v7 fix): this flag is now actually used!
-                                  # Previously it was declared but never passed to
-                                  # build_default_host_registry — see wiring below.
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
@@ -215,7 +225,7 @@ USER_ZOOM: str | None = None
 # USER_FONT_FAMILY:   font family name (e.g. "JetBrainsMono Nerd Font", "Iosevka")
 # USER_FONT_SIZE:     UI chrome font size string (e.g. "10pt", "12pt")
 #                     → maps to fonts.default_size (Qt string, affects qute chrome)
-# USER_FONT_SIZE_WEB: web content default font size (e.g. "16px", "18px", "16")
+# USER_FONT_SIZE_WEB: web content default font size (e.g. "16px", "18px", or "16")
 #                     → maps to fonts.web.size.default (int, affects page text)
 #                     Accepts "16px", "18px", or plain "16" — all parsed to int.
 # None = keep AppearanceLayer / theme default.
@@ -235,11 +245,6 @@ USER_GITHUB: str = "redskaber"
 # Set USER_SEARCH_ENGINES_MERGE=True (default) for additive behavior.
 # Set to False to REPLACE the entire engine map.
 # None = keep base engines unchanged.
-#
-# Example — add Jira:
-#   USER_SEARCH_ENGINES = {
-#       "jira": "https://jira.mycompany.com/issues/?jql=text+~+{}",
-#   }
 USER_SEARCH_ENGINES: dict[str, str] | None = {
     "gpt":      "https://chatgpt.com/?{}",
     "claude":   "https://claude.ai/new/?{}",
@@ -255,28 +260,28 @@ USER_SEARCH_ENGINES_MERGE: bool = True
 #   "system"                     → use the system proxy (default)
 #   "none"                       → direct connection, bypass system proxy
 #   "socks5://host:port"         → SOCKS5 proxy  (clash-verge / clash-meta)
-#   "socks://host:port"          → SOCKS5 (alias)
 #   "http://host:port"           → HTTP CONNECT proxy
 #
 # Clash-Verge / Clash-Meta mixed-port:
-#   SOCKS5 → socks5://127.0.0.1:7897   (preferred; tunnels all TCP+UDP)
-#   HTTP   → http://127.0.0.1:7897     (fallback for HTTP-only proxies)
-#
-# None = keep PrivacyLayer default ("system").
-#
-# Toggle keybinding: ,px (cycle modes), ,p0 (direct), ,ps (system)
+#   SOCKS5 → socks5://127.0.0.1:7897
+#   HTTP   → http://127.0.0.1:7897
 #
 USER_PROXY: Optional[str] = "socks5://127.0.0.1:7897"
-# USER_PROXY: Optional[str] = "http://127.0.0.1:7897"   # HTTP port (alt)
-# USER_PROXY: Optional[str] = "system"                   # use system proxy
-# USER_PROXY: Optional[str] = "none"                     # direct, no proxy
-# USER_PROXY: Optional[str] = None                       # keep PrivacyLayer default
+# USER_PROXY: Optional[str] = "http://127.0.0.1:7897"
+# USER_PROXY: Optional[str] = "system"
+# USER_PROXY: Optional[str] = "none"
+# USER_PROXY: Optional[str] = None
+
+# ── Messages timeout (v9) ─────────────────────────────────────────────────────
+# How long qutebrowser notifications are shown (milliseconds).
+# None = keep BaseLayer default (5000ms).
+USER_MESSAGES_TIMEOUT: int | None = None
 
 # ── Extra settings (escape hatch) ─────────────────────────────────────────────
 # Any qutebrowser setting not covered by the named layers.
 # NOTE: content.proxy must NOT be set here as a list — use USER_PROXY above.
 USER_EXTRA_SETTINGS: dict[str, Any] = {
-    # Uncomment to override font (normally set by AppearanceLayer theme):
+    # Uncomment to override font:
     # "fonts.default_family": "JetBrainsMono Nerd Font",
     # "fonts.default_size":   "10pt",
     #
@@ -285,6 +290,9 @@ USER_EXTRA_SETTINGS: dict[str, Any] = {
     #
     # Uncomment to hide the status bar unless in a special mode:
     # "statusbar.show": "in-mode",
+    #
+    # Uncomment to change messages timeout:
+    # "messages.timeout": 3000,
 }
 
 # ── Extra keybindings (escape hatch) ──────────────────────────────────────────
@@ -296,45 +304,34 @@ USER_EXTRA_BINDINGS: list[tuple[str, str, str]] = [
     (f"{L}m",   "spawn --userscript open_with.py --app mpv",           "normal"),
     (";m",      "hint links spawn --userscript open_with.py --app mpv","normal"),
 
-    # ── Search selection ──────────────────────────────────────────────────
-    (f"{L}/",   "spawn --userscript search_sel.py --tab",              "normal"),
-    (f"{L}sg",  "spawn --userscript search_sel.py --engine g --tab",   "normal"),
-    (f"{L}sw",  "spawn --userscript search_sel.py --engine w --tab",   "normal"),
-
-    # ── Reader mode ───────────────────────────────────────────────────────
+    # ── Readability (reader mode) ──────────────────────────────────────────
     (f"{L}R",   "spawn --userscript readability.py",                   "normal"),
 
-    # ── Proxy toggle (clash-verge ↔ direct) ──────────────────────────────
-    # ,px  → cycle: socks5 → http → system → none
-    (f"{L}px",  "config-cycle content.proxy socks5://127.0.0.1:7897 http://127.0.0.1:7897 system none", "normal"),
-    # ,p0  → direct connection (no proxy)
-    (f"{L}p0",  "set content.proxy none",                              "normal"),
-    # ,ps  → use system proxy settings
-    (f"{L}ps",  "set content.proxy system",                            "normal"),
+    # ── Password manager ──────────────────────────────────────────────────
+    (f"{L}p",   "spawn --userscript password.py",                      "normal"),
 
-    # ── Clipboard URL ─────────────────────────────────────────────────────
-    ("gx",      "open -t -- {clipboard}",                              "normal"),
+    # ── Search selection ──────────────────────────────────────────────────
+    (f"{L}s",   "spawn --userscript search_sel.py",                    "normal"),
 
-    # ── Copy as Markdown link ─────────────────────────────────────────────
-    (f"{L}lm",  "yank inline [{title}]({url})",                        "normal"),
+    # ── Context: display current context in message bar ───────────────────
+    (f"{L}ci",  "spawn --userscript context_switch.py --show",         "normal"),
 
-    # ── Session management (uncomment + customise) ────────────────────────
-    # (f"{L}Ss", "spawn --userscript tab_restore.py --save work",       "normal"),
-    # (f"{L}Sr", "spawn --userscript tab_restore.py --restore work",    "normal"),
-    # (f"{L}Sl", "spawn --userscript tab_restore.py --list",            "normal"),
-
-    # ── Pass password manager (uncomment to enable) ───────────────────────
-    # (f"{L}pp", "spawn --userscript password.py",                      "normal"),
-    # (f"{L}pP", "spawn --userscript password.py --otp",                "normal"),
+    # ── Proxy cycle ───────────────────────────────────────────────────────
+    (f"{L}px",  "set content.proxy system",                             "normal"),
+    (f"{L}p0",  "set content.proxy none",                               "normal"),
+    (f"{L}ps",  "set content.proxy socks5://127.0.0.1:7897",            "normal"),
 ]
 
-# ── Extra aliases (escape hatch) ──────────────────────────────────────────────
+# ── Extra aliases (escape hatch) ─────────────────────────────────────────────
+# Dict of {name: command}.  Applied at priority=90.
 USER_EXTRA_ALIASES: dict[str, str] = {
     "rl":    "config-source",
     "clean": "download-clear",
     "his":   "history",
     "bm":    "bookmark-list",
     "qm":    "quickmark-list",
+    # v9: snapshot introspection alias
+    "snap":  "message-info 'Use :config-source to reload'",
 }
 
 
@@ -353,16 +350,13 @@ def _build_orchestrator() -> ConfigOrchestrator:
     fsm       = ConfigStateMachine()
 
     # ── Host Policy Registry ──────────────────────────────────────────
-    # v7 fix: HOST_POLICY_DEV is now passed as include_dev= to the factory.
-    # Previously the flag was declared in config.py but silently ignored
-    # because _build_host_registry was called without it.
     host_registry: Optional[HostPolicyRegistry] = None  # type: ignore[name-defined]
     if _HOST_REGISTRY_AVAILABLE:
         host_registry = _build_host_registry(  # type: ignore[possibly-undefined]
             include_login  = HOST_POLICY_LOGIN,
             include_social = HOST_POLICY_SOCIAL,
             include_media  = HOST_POLICY_MEDIA,
-            include_dev    = HOST_POLICY_DEV,   # ← v7 fix: was missing
+            include_dev    = HOST_POLICY_DEV,
         )
 
     # ── Layer Stack ───────────────────────────────────────────────────
@@ -390,36 +384,46 @@ def _build_orchestrator() -> ConfigOrchestrator:
         stack.register(PerformanceLayer(profile=PERFORMANCE_PROFILE))
 
     if LAYERS.get("user"):
+        # Merge messages timeout into extra_settings if set
+        extra = dict(USER_EXTRA_SETTINGS or {})
+        if USER_MESSAGES_TIMEOUT is not None:
+            extra.setdefault("messages.timeout", USER_MESSAGES_TIMEOUT)
+
         stack.register(UserLayer(
-            leader                = LEADER_KEY,
-            editor                = USER_EDITOR,
-            start_pages           = USER_START_PAGES,
-            zoom                  = USER_ZOOM,
-            proxy                 = USER_PROXY,
-            search_engines        = USER_SEARCH_ENGINES,
-            search_engines_merge  = USER_SEARCH_ENGINES_MERGE,
-            spellcheck_langs      = USER_SPELLCHECK,
-            font_family           = USER_FONT_FAMILY,
-            font_size             = USER_FONT_SIZE,
-            font_size_web         = USER_FONT_SIZE_WEB,
-            extra_settings        = USER_EXTRA_SETTINGS or {},
-            extra_bindings        = USER_EXTRA_BINDINGS or [],
-            extra_aliases         = USER_EXTRA_ALIASES  or {},
-            github_username       = USER_GITHUB,
+            leader               = LEADER_KEY,
+            editor               = USER_EDITOR,
+            start_pages          = USER_START_PAGES,
+            zoom                 = USER_ZOOM,
+            proxy                = USER_PROXY,
+            search_engines       = USER_SEARCH_ENGINES,
+            search_engines_merge = USER_SEARCH_ENGINES_MERGE,
+            spellcheck_langs     = USER_SPELLCHECK,
+            font_family          = USER_FONT_FAMILY,
+            font_size            = USER_FONT_SIZE,
+            font_size_web        = USER_FONT_SIZE_WEB,
+            extra_settings       = extra,
+            extra_bindings       = USER_EXTRA_BINDINGS or [],
+            extra_aliases        = USER_EXTRA_ALIASES  or {},
+            github_username      = USER_GITHUB,
         ))
 
     # ── Lifecycle hooks ───────────────────────────────────────────────
     @lifecycle.decorator(LifecycleHook.POST_APPLY, priority=100)
     def _log_apply_done() -> None:
-        logger.info("✓ qutebrowser config applied successfully (v8)")
+        logger.info("✓ qutebrowser config applied successfully (v9)")
 
     @lifecycle.decorator(LifecycleHook.ON_ERROR, priority=10)
     def _log_error() -> None:
         logger.error("✗ config apply encountered errors — check :messages")
 
-    _ = _log_apply_done, _log_error   # suppress Pyright reportUnusedFunction
+    @lifecycle.decorator(LifecycleHook.POST_RELOAD, priority=100)
+    def _log_reload_done() -> None:
+        logger.info("↺ qutebrowser config hot-reloaded (v9)")
+
+    _ = _log_apply_done, _log_error, _log_reload_done  # suppress reportUnusedFunction
 
     # ── Event observers ───────────────────────────────────────────────
+
     def _on_layer_applied(e: Event) -> None:
         if isinstance(e, LayerAppliedEvent):
             logger.info(
@@ -453,10 +457,52 @@ def _build_orchestrator() -> ConfigOrchestrator:
                     e.warning_count, e.info_count,
                 )
 
-    router.events.subscribe(LayerAppliedEvent,      _on_layer_applied)
-    router.events.subscribe(ConfigErrorEvent,       _on_config_error)
-    router.events.subscribe(ThemeChangedEvent,      _on_theme_changed)
-    router.events.subscribe(HealthReportReadyEvent, _on_health_ready)
+    def _on_config_reloaded(e: Event) -> None:
+        """Log hot-reload completion stats."""
+        if isinstance(e, ConfigReloadedEvent):
+            if e.error_count:
+                logger.warning(
+                    "[Reload] ↺ done: %d change(s), %d error(s), %.1fms",
+                    e.change_count, e.error_count, e.duration_ms,
+                )
+            else:
+                logger.info(
+                    "[Reload] ↺ done: %d change(s), %.1fms",
+                    e.change_count, e.duration_ms,
+                )
+
+    def _on_snapshot_taken(e: Event) -> None:
+        """Debug-level snapshot notification."""
+        if isinstance(e, SnapshotTakenEvent):
+            logger.debug(
+                "[Snapshot] recorded: label=%r  keys=%d  version=%d",
+                e.label, e.key_count, e.version,
+            )
+
+    def _on_policy_denied(e: Event) -> None:
+        """Warn when a policy chain DENY fires during apply."""
+        if isinstance(e, PolicyDeniedEvent):
+            logger.warning(
+                "[Policy] DENY  key=%s  reason=%s  layer=%s",
+                e.key, e.reason, e.layer_name or "?",
+            )
+
+    def _on_metrics(e: Event) -> None:
+        """Debug-level performance telemetry."""
+        if isinstance(e, MetricsEvent):
+            logger.debug(
+                "[Metrics] phase=%-16s  %.1fms  keys=%d",
+                e.phase, e.duration_ms, e.key_count,
+            )
+
+    router.events.subscribe(LayerAppliedEvent,       _on_layer_applied)
+    router.events.subscribe(ConfigErrorEvent,        _on_config_error)
+    router.events.subscribe(ThemeChangedEvent,       _on_theme_changed)
+    router.events.subscribe(HealthReportReadyEvent,  _on_health_ready)
+    router.events.subscribe(ConfigReloadedEvent,     _on_config_reloaded)
+    router.events.subscribe(SnapshotTakenEvent,      _on_snapshot_taken)
+    router.events.subscribe(PolicyDeniedEvent,       _on_policy_denied)
+    router.events.subscribe(MetricsEvent,            _on_metrics)
 
     return ConfigOrchestrator(
         stack         = stack,

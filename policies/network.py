@@ -13,7 +13,7 @@ PARANOID  → route through Tor SOCKS5 proxy
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from core.strategy import Policy, PolicyAction, PolicyChain, PolicyDecision, ConfigDict
 from layers.privacy import PrivacyProfile
@@ -88,8 +88,6 @@ class ProxyFormatPolicy(Policy):
     def evaluate(self, key: str, value: Any, context: ConfigDict) -> Optional[PolicyDecision]:
         if key != "content.proxy":
             return None
-        if not isinstance(value, list):
-            return None   # str/None: handled by ProxyPolicy
         if not value:
             return PolicyDecision(
                 action=PolicyAction.BLOCK,
@@ -98,6 +96,9 @@ class ProxyFormatPolicy(Policy):
                     "must be a str like 'socks5://host:port' or 'system'."
                 ),
             )
+        if not isinstance(value, list):
+            return None   # str/None: handled by ProxyPolicy
+        value = cast(list[Any], value)
         first = value[0]
         if not isinstance(first, str):
             return PolicyDecision(
