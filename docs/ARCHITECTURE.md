@@ -532,7 +532,7 @@ tests/
     └── integration          full load→record→reload→delta cycle
 
   test_health.py         health check tests
-    ├── all 12 built-in checks
+    ├── all 15 built-in checks  (v8: +FontFamilyCheck, SpellcheckLangCheck, ContentHeaderCheck)
     └── HealthChecker.default()
 
   test_extensions.py     extension/layer tests
@@ -550,7 +550,29 @@ python3 -m pytest tests/ -v
 
 ## Changelog
 
-### v7 (current)
+### v8 (current)
+
+**Bug fixes:**
+
+| File | Bug | Fix |
+|------|-----|-----|
+| `core/health.py` | `CookieAcceptCheck` emitted `Severity.WARNING`; test contract was `INFO` | Changed to `Severity.INFO` |
+| `core/health.py` | `DownloadDirCheck` only matched exact `/tmp` and `/var/tmp`; `/tmp/downloads` passed silently | Added `startswith(prefix + os.sep)` guard for subdirectory coverage |
+| `core/health.py` | `SearchEngineDefaultCheck` only errored when `url.searchengines` was a dict without `DEFAULT`; when key was absent entirely (`None`), no issue was raised | Condition extended: `engines is None or (isinstance(engines, dict) and "DEFAULT" not in engines)` |
+
+**New features:**
+
+- **`core/health.py`**: Added 3 new checks — `FontFamilyCheck` (warns on empty `fonts.default_family`), `SpellcheckLangCheck` (validates BCP-47 tags in `spellcheck.languages`), `ContentHeaderCheck` (warns on empty `content.headers.user_agent`). Total: 15 checks.
+- **`layers/context.py`**: Added `GAMING` context (`ContextMode.GAMING`) — Steam, Twitch, ProtonDB, AreWeGameYet, Lutris search; `content.autoplay=True`; `content.fullscreen.window=True`. Switched with `,Cg`.
+- **`scripts/context_switch.py`**: Added `gaming` to `VALID_CONTEXTS` and `_CONTEXT_LABELS`.
+- **`layers/user.py`**: Added `font_family`, `font_size`, `font_size_ui` constructor parameters — first-class font override API. Previously required the `extra_settings` escape hatch. Maps to `fonts.default_family`, `fonts.default_size`, `fonts.web.size.default`.
+- **`layers/user.py`**: Empty `editor=[]` list is now silently skipped (previously would have written an invalid value that `EditorCommandCheck` would flag as an error).
+- **`orchestrator.py`**: `reload()` now uses `IncrementalApplier` for delta-only hot-reload. Before rebuilding, a snapshot of current settings is taken; after rebuild, only changed/added keys are re-applied. Keybindings and aliases are always re-applied. On first call (no prior snapshot), full apply() is used as fallback.
+- **`orchestrator.py`**: `ConfigOrchestrator` owns a `SnapshotStore(max_history=10)` and `IncrementalApplier`.
+- **`config.py`**: Added `USER_FONT_FAMILY`, `USER_FONT_SIZE`, `USER_FONT_SIZE_UI` variables. Wired into `UserLayer(...)`.
+- **`config.py`**: Added `HealthReportReadyEvent` subscriber — logs detailed warning on errors, brief info on warnings/infos, silent on clean.
+
+### v7
 
 **Bug fixes:**
 
@@ -568,8 +590,8 @@ python3 -m pytest tests/ -v
 
 - `policies/host.py`: Added `DEV_RULES` (`[::1]` IPv6 loopback + `*.local` mDNS)
 - `policies/host.py`: `HostPolicyRegistry.summary()` now shows enabled/total counts
-- `policies/host.py`: `HostPolicyRegistry.active()` return type is now a proper `Iterator[HostRule]` generator method (not a generator expression without annotation)
-- `layers/user.py`: `search_engines_merge` branches documented clearly (both branches are valid, distinction is about what the caller provides, not code-path difference)
+- `policies/host.py`: `HostPolicyRegistry.active()` return type is now a proper `Iterator[HostRule]` generator method
+- `layers/user.py`: `search_engines_merge` branches documented clearly
 - `ARCHITECTURE.md`: Merged `ARCHITECTURE_v6_patch.md` — single source of truth for all version history
 
 ### v6 (merged from ARCHITECTURE_v6_patch.md)

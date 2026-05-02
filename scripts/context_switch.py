@@ -50,7 +50,7 @@ def _context_file() -> str:
     return os.path.join(config_dir, ".context")
 
 
-VALID_CONTEXTS = {"default", "work", "research", "media", "dev", "writing"}
+VALID_CONTEXTS = {"default", "work", "research", "media", "dev", "writing", "gaming"}
 
 _CONTEXT_LABELS = {
     "default":  "Default (base settings)",
@@ -59,6 +59,7 @@ _CONTEXT_LABELS = {
     "media":    "Media — YouTube, Bilibili, autoplay ON",
     "dev":      "Dev — GitHub, MDN, crates, npm",
     "writing":  "Writing — focus, dict, thesaurus",
+    "gaming":   "Gaming — Steam, Twitch, ProtonDB",
 }
 
 

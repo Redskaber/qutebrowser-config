@@ -1,7 +1,7 @@
 """
 orchestrator.py
 ===============
-Configuration Orchestrator  (composition root)  v7
+Configuration Orchestrator  (composition root)  v8
 
 Responsibilities:
   1. Build the LayerStack
@@ -11,8 +11,18 @@ Responsibilities:
   5. Emit lifecycle events via the MessageRouter
   6. Apply per-host overrides via HostPolicyRegistry
   7. Register QueryBus handlers for introspection
+  8. Track config snapshots and diff-apply on hot-reload  [v8]
 
-v7 changes:
+v8 changes:
+  - reload() now uses IncrementalApplier: records a snapshot before and after
+    build(), diffs the two, and calls apply_settings() only for changed/added
+    keys rather than re-applying the full 227-key settings dict on every
+    :config-source.  Removed keys are currently left in-place (qutebrowser
+    has no public "unset" API); this matches the previous behaviour.
+  - SnapshotStore is owned by the orchestrator (max_history=10).
+  - Full apply() path is unchanged — incremental only fires on reload().
+
+v7 changes (retained):
   - apply_host_policies: when HostPolicyRegistry is active, BehaviorLayer
     host_policies() are only applied for patterns NOT already covered by
     the registry.  This eliminates silent double-application of the same
@@ -50,6 +60,7 @@ from core.protocol import (
 from core.state import ConfigEvent, ConfigState, ConfigStateMachine
 from core.strategy import PolicyAction, PolicyChain
 from core.health import HealthChecker, HealthReport
+from core.incremental import IncrementalApplier, SnapshotStore
 
 logger = logging.getLogger("qute.orchestrator")
 
@@ -237,6 +248,10 @@ class ConfigOrchestrator:
         self._resolved:     Optional[Dict[str, ConfigPacket]] = None
         self._applier:      Optional[ConfigApplier]           = None
         self._last_report:  Optional[HealthReport]            = None
+
+        # v8: Snapshot store for incremental hot-reload
+        self._snapshot_store      = SnapshotStore(max_history=10)
+        self._incremental_applier = IncrementalApplier(self._snapshot_store)
 
         # Wire FSM transition observer
         self._fsm.on_transition(self._on_state_transition)
@@ -458,11 +473,61 @@ class ConfigOrchestrator:
     # ── Hot Reload ─────────────────────────────────────────────────────
 
     def reload(self, applier: Optional[ConfigApplier] = None) -> List[str]:
-        """Hot-reload: re-build and re-apply the full config."""
+        """
+        Hot-reload: re-build and diff-apply only changed settings (v8).
+
+        On the first call (no previous snapshot), falls back to full apply().
+        On subsequent calls, only changed/added keys are re-applied via
+        IncrementalApplier — unchanged keys are skipped for performance.
+
+        The FSM transitions:  ACTIVE → RELOADING → VALIDATING → APPLYING → ACTIVE
+        """
         self._fsm.send(ConfigEvent.RELOAD)
         self._lifecycle.run(LifecycleHook.PRE_RELOAD)
+
+        _applier = applier or self._applier
+        if _applier is None:
+            logger.warning("[Orchestrator] reload() called without applier — skipping apply")
+            return []
+
+        # Snapshot the current settings before rebuilding
+        current_settings: ConfigDict = {}
+        if self._resolved is not None:
+            current_settings = dict(self._stack.merged.get("settings", {}))
+        self._incremental_applier.record(current_settings, label="pre-reload")
+
+        # Rebuild layers
         self.build()
-        errors = self.apply(applier or self._applier)  # type: ignore[arg-type]
+
+        # Snapshot the new settings
+        new_settings: ConfigDict = dict(self._stack.merged.get("settings", {}))
+        self._incremental_applier.record(new_settings, label="post-reload")
+
+        # Compute delta
+        changes = self._incremental_applier.compute_delta()
+
+        errors: List[str] = []
+
+        if not changes:
+            logger.info("[Orchestrator] reload: no settings changed — nothing to apply")
+        else:
+            # Incremental apply: only changed/added keys
+            inc_errors = self._incremental_applier.apply_delta(
+                changes,
+                apply_fn=lambda k, v: _applier.apply_settings({k: v}, None),
+            )
+            errors.extend(inc_errors)
+            logger.info(
+                "[Orchestrator] incremental reload: %d change(s), %d error(s)",
+                len([c for c in changes if c.kind.name != "SAME"]),
+                len(inc_errors),
+            )
+
+        # Always re-apply keybindings and aliases (not tracked incrementally)
+        merged = self._stack.merged
+        errors.extend(_applier.apply_keybindings(merged.get("keybindings", [])))
+        errors.extend(_applier.apply_aliases(merged.get("aliases", {})))
+
         self._lifecycle.run(LifecycleHook.POST_RELOAD)
         return errors
 
@@ -479,7 +544,7 @@ class ConfigOrchestrator:
 
         lines = [
             "─" * 60,
-            "ConfigOrchestrator Summary (v7)",
+            "ConfigOrchestrator Summary (v8)",
             "─" * 60,
             self._stack.summary(),
             f"\nFSM: {self._fsm}",

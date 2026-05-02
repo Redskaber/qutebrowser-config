@@ -2,7 +2,7 @@
 
 > A principled, layered qutebrowser configuration — built like software, not a script.
 
-**197 tests · 7 layers · 8 core modules · 4 strategy modules · 4 policy modules · 18+ themes · NixOS-ready**
+**209 tests · 7 layers · 8 core modules · 4 strategy modules · 4 policy modules · 18+ themes · NixOS-ready**
 
 ---
 
@@ -34,15 +34,15 @@ config.py  ← qutebrowser loads ONLY this file
           │     ├── PrivacyLayer     [p=20]  security & tracking protection
           │     ├── AppearanceLayer  [p=30]  theme, fonts, colors
           │     ├── BehaviorLayer    [p=40]  UX, keybindings, per-host rules
-          │     ├── ContextLayer     [p=45]  situational mode (work/research/media/dev/writing)
+          │     ├── ContextLayer     [p=45]  situational mode (work/research/media/dev/writing/gaming)
           │     ├── PerformanceLayer [p=50]  cache & rendering tuning
           │     └── UserLayer        [p=90]  personal overrides (highest)
           ├── ConfigStateMachine     IDLE → LOADING → VALIDATING → APPLYING → ACTIVE
           ├── MessageRouter          EventBus + CommandBus + QueryBus
           ├── LifecycleManager       PRE_INIT → POST_INIT → PRE_APPLY → POST_APPLY
           ├── HostPolicyRegistry     per-host config.set(…, pattern=…) rules
-          ├── HealthChecker          post-apply validation (12 built-in checks)
-          └── IncrementalApplier     delta-only hot reload
+          ├── HealthChecker          post-apply validation (15 built-in checks)
+          └── IncrementalApplier     delta-only hot reload (wired into reload())
 ```
 
 ---
@@ -71,15 +71,16 @@ config.py  ← qutebrowser loads ONLY this file
 
 Switch between situational browsing modes at runtime — no restart needed.
 
-| Key    | Context  | Purpose                                             |
-| ------ | -------- | --------------------------------------------------- |
-| `,Cw`  | work     | Jira, GitLab, corporate search                      |
-| `,Cr`  | research | arXiv, Scholar, Wikipedia, distraction-free         |
-| `,Cm`  | media    | YouTube, Bilibili, Twitch, autoplay ON              |
-| `,Cd`  | dev      | GitHub, MDN, crates, npm, DevDocs                   |
-| `,Cwt` | writing  | Dict, Thesaurus, Grammarly, focus mode ← **NEW v6** |
-| `,C0`  | default  | Reset to base defaults                              |
-| `,Ci`  | —        | Show current context + description in message bar   |
+| Key    | Context  | Purpose                                            |
+| ------ | -------- | -------------------------------------------------- |
+| `,Cw`  | work     | Jira, GitLab, corporate search                     |
+| `,Cr`  | research | arXiv, Scholar, Wikipedia, distraction-free        |
+| `,Cm`  | media    | YouTube, Bilibili, Twitch, autoplay ON             |
+| `,Cd`  | dev      | GitHub, MDN, crates, npm, DevDocs                  |
+| `,Cwt` | writing  | Dict, Thesaurus, Grammarly, focus mode             |
+| `,Cg`  | gaming   | Steam, Twitch, ProtonDB, AreWeGameYet ← **NEW v8** |
+| `,C0`  | default  | Reset to base defaults                             |
+| `,Ci`  | —        | Show current context + description in message bar  |
 
 Set `ACTIVE_CONTEXT = "dev"` in config.py to permanently activate a context.
 Or use the environment variable: `QUTE_CONTEXT=research qutebrowser`.
@@ -102,7 +103,7 @@ qutebrowser-config/
 │   ├── layer.py            ← LayerProtocol + LayerStack
 │   ├── strategy.py         ← Strategy + Policy + PolicyChain
 │   ├── incremental.py      ← delta apply + snapshots
-│   └── health.py           ← HealthChecker (12 checks)
+│   └── health.py           ← HealthChecker (15 checks)
 │
 ├── layers/                 ← extend here
 │   ├── base.py  [p=10] · privacy.py [p=20] · appearance.py [p=30]
@@ -117,7 +118,7 @@ qutebrowser-config/
 ├── scripts/
 │   ├── install.sh           ← deployment
 │   ├── gen_keybindings.py   ← auto-gen KEYBINDINGS.md
-│   ├── context_switch.py    ← runtime context switching (6 contexts)
+│   ├── context_switch.py    ← runtime context switching (7 contexts)
 │   ├── open_with.py · readability.py · password.py
 │   ├── search_sel.py · tab_restore.py
 │
@@ -160,61 +161,58 @@ Add a `ContextSpec(…)` to `_CONTEXT_TABLE` in `layers/context.py`.
 ```
 ,Cw  → work        ,Cr  → research
 ,Cm  → media       ,Cd  → dev
-,Cwt → writing     ,C0  → default
-,Ci  → show current context
+,Cwt → writing     ,Cg  → gaming  (v8)
+,C0  → default     ,Ci  → show current context
 ```
 
 ---
 
 ## Key Configuration Variables (config.py)
 
-| Variable                    | Type                 | Purpose                                               |
-| --------------------------- | -------------------- | ----------------------------------------------------- |
-| `THEME`                     | `str`                | Active color scheme                                   |
-| `PRIVACY_PROFILE`           | `PrivacyProfile`     | STANDARD / HARDENED / PARANOID                        |
-| `PERFORMANCE_PROFILE`       | `PerformanceProfile` | BALANCED / HIGH / LOW / LAPTOP                        |
-| `LEADER_KEY`                | `str`                | Multi-key binding prefix (default `,`)                |
-| `ACTIVE_CONTEXT`            | `str \| None`        | Situational context (work/research/media/dev/writing) |
-| `LAYERS`                    | `dict[str, bool]`    | Enable/disable individual layers                      |
-| `USER_EDITOR`               | `list[str] \| None`  | Editor command for :open-editor                       |
-| `USER_START_PAGES`          | `list[str] \| None`  | Browser start pages                                   |
-| `USER_ZOOM`                 | `str \| None`        | Default zoom level                                    |
-| `USER_PROXY`                | `Optional[str]`      | Proxy URL, or None to keep layer default              |
-| `USER_GITHUB`               | `str`                | GitHub username for `:gh` alias                       |
-| `USER_SEARCH_ENGINES`       | `dict \| None`       | Additional/override search engines                    |
-| `USER_SEARCH_ENGINES_MERGE` | `bool`               | True=merge on top, False=replace entirely             |
-| `USER_SPELLCHECK`           | `list[str] \| None`  | Spellcheck language codes                             |
-| `USER_EXTRA_SETTINGS`       | `dict[str, Any]`     | Escape hatch — any qutebrowser setting                |
-| `USER_EXTRA_BINDINGS`       | `list[tuple]`        | Escape hatch — additional keybindings                 |
-| `USER_EXTRA_ALIASES`        | `dict[str, str]`     | Escape hatch — command aliases                        |
-| `HOST_POLICY_LOGIN`         | `bool`               | Load login cookie exceptions (default True)           |
-| `HOST_POLICY_SOCIAL`        | `bool`               | Load social site exceptions (default True)            |
-| `HOST_POLICY_MEDIA`         | `bool`               | Load media site exceptions (default True)             |
-| `HOST_POLICY_DEV`           | `bool`               | Load localhost/dev exceptions (default True)          |
+| Variable                    | Type                 | Purpose                                                      |
+| --------------------------- | -------------------- | ------------------------------------------------------------ |
+| `THEME`                     | `str`                | Active color scheme                                          |
+| `PRIVACY_PROFILE`           | `PrivacyProfile`     | STANDARD / HARDENED / PARANOID                               |
+| `PERFORMANCE_PROFILE`       | `PerformanceProfile` | BALANCED / HIGH / LOW / LAPTOP                               |
+| `LEADER_KEY`                | `str`                | Multi-key binding prefix (default `,`)                       |
+| `ACTIVE_CONTEXT`            | `str \| None`        | Situational context (work/research/media/dev/writing/gaming) |
+| `LAYERS`                    | `dict[str, bool]`    | Enable/disable individual layers                             |
+| `USER_EDITOR`               | `list[str] \| None`  | Editor command for :open-editor                              |
+| `USER_START_PAGES`          | `list[str] \| None`  | Browser start pages                                          |
+| `USER_ZOOM`                 | `str \| None`        | Default zoom level                                           |
+| `USER_FONT_FAMILY`          | `str \| None`        | Override UI font family _(v8)_                               |
+| `USER_FONT_SIZE`            | `str \| None`        | Override UI font size, e.g. `"10pt"` _(v8)_                  |
+| `USER_FONT_SIZE_WEB`        | `str \| None`        | Override web content font size, e.g. `"16px"` _(v8/v9)_      |
+| `USER_PROXY`                | `Optional[str]`      | Proxy URL, or None to keep layer default                     |
+| `USER_GITHUB`               | `str`                | GitHub username for `:gh` alias                              |
+| `USER_SEARCH_ENGINES`       | `dict \| None`       | Additional/override search engines                           |
+| `USER_SEARCH_ENGINES_MERGE` | `bool`               | True=merge on top, False=replace entirely                    |
+| `USER_SPELLCHECK`           | `list[str] \| None`  | Spellcheck language codes                                    |
+| `USER_EXTRA_SETTINGS`       | `dict[str, Any]`     | Escape hatch — any qutebrowser setting                       |
+| `USER_EXTRA_BINDINGS`       | `list[tuple]`        | Escape hatch — additional keybindings                        |
+| `USER_EXTRA_ALIASES`        | `dict[str, str]`     | Escape hatch — command aliases                               |
+| `HOST_POLICY_LOGIN`         | `bool`               | Load login cookie exceptions (default True)                  |
+| `HOST_POLICY_SOCIAL`        | `bool`               | Load social site exceptions (default True)                   |
+| `HOST_POLICY_MEDIA`         | `bool`               | Load media site exceptions (default True)                    |
+| `HOST_POLICY_DEV`           | `bool`               | Load localhost/dev exceptions (default True)                 |
 
 ---
 
-## v6 Changelog
+## v8 / v9 Changelog
 
 ### Bug Fixes
 
-- **`layers/base.py`**: Removed invalid `downloads.prevent_mixed_content` key (not a qutebrowser setting; was silently ignored)
-- **`layers/context.py`**: Fixed `_resolve_active_mode` to actually read the `.context` file written by `context_switch.py` (was only checking env var and constructor param — file was written but never read)
-- **`config.py`**: Fixed `USER_PROXY` type from `str` to `Optional[str]` to match `UserLayer._validate_proxy` signature
+- **`core/health.py`**: `CookieAcceptCheck` severity `WARNING`→`INFO`; `DownloadDirCheck` now catches `/tmp` subdirectories; `SearchEngineDefaultCheck` now errors when `url.searchengines` key is absent entirely
+- **`layers/appearance.py`**: `fonts.web.size.default` was hardcoded to `16`; now reads `ColorScheme.font_size_web` via `_parse_px()` helper. Added `fonts.default_family` / `fonts.default_size` to font settings so UserLayer overrides work correctly
+- **`layers/user.py`**: Fixed `font_size_web` parse — `str.rstrip("pt px")` stripped individual chars and would silently corrupt values like `"16px"` → `"1"`. Now uses a proper `_parse_size_to_int()` helper. Renamed `font_size_ui` → `font_size_web` for clarity
+- **`layers/user.py`**: `editor=[]` now silently skipped (was writing an invalid empty list value)
 
 ### New Features
 
-- **`layers/context.py`**: Added `WRITING` context (focus mode, dict/thesaurus/grammar search engines)
-- **`scripts/context_switch.py`**: Added `writing` as a valid context; improved confirmation messages
-- **`layers/behavior.py`**: Added zoom keybindings (`zi`/`zo`/`z0`/`zz`), `<ctrl-tab>` tab cycling, `gf`/`wf` frame hints, `tc` tab-clone, prompt mode `<ctrl-y>` accept, `,b` download list, `<ctrl-shift-tab>`
-- **`layers/behavior.py`**: `HostPolicy` made frozen dataclass with `category` field
-- **`core/health.py`**: Added `ProxySchemeCheck` (validates proxy URL format), `ZoomDefaultCheck` (validates zoom% format), `BlockingListCheck` (warns if blocking enabled with empty filter list) — total 12 checks
-- **`layers/performance.py`**: Added `content.webgl` control per profile, `qt.chromium.low_end_device_mode` for LOW profile, better laptop profile documentation
-- **`layers/base.py`**: Added `tabs.indicator.width/padding`, `tabs.favicons.scale`, `tabs.title.alignment`, `tabs.min_width/max_width`, `completion.cmd_history_max_items`, `downloads.location.remember`
-- **`config.py`**: Added `HOST_POLICY_DEV` flag, improved `USER_EXTRA_SETTINGS` comments with font override examples
+- **`core/health.py`**: 3 new checks — `FontFamilyCheck`, `SpellcheckLangCheck`, `ContentHeaderCheck` (15 total)
+- **`layers/context.py`**: `GAMING` context — Steam, ProtonDB, Twitch, AreWeGameYet; `,Cg` binding
+- **`layers/user.py`**: First-class `font_family`, `font_size`, `font_size_web` params
+- **`config.py`**: `USER_FONT_FAMILY`, `USER_FONT_SIZE`, `USER_FONT_SIZE_WEB` variables; `HealthReportReadyEvent` subscriber
+- **`orchestrator.py`**: `reload()` uses `IncrementalApplier` — only changed keys re-applied on `:config-source`
 
-### Documentation
-
-- README.md: Updated test count, added WRITING context, v6 changelog
-- ARCHITECTURE.md: v6 section, updated health check count to 12
-- KEYBINDINGS.md: Added new v6 bindings section
+### Tests: 209 pass (was 197)

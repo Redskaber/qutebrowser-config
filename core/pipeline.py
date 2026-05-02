@@ -284,7 +284,7 @@ class ValidateStage(PipeStage):
         if errors:
             result = packet
             for err in errors:
-                result = result.with_error(err)
+                result = result.with_warning(err)
                 logger.warning("[ValidateStage] %s", err)
             return result
 

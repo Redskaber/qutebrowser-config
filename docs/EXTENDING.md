@@ -272,6 +272,81 @@ def build_content_policy_chain(profile: PrivacyProfile) -> PolicyChain:
 
 ---
 
+## Overriding Fonts (v8+)
+
+The simplest way to change fonts is via the three `USER_FONT_*` variables in `config.py`. No need to touch `layers/user.py` or `extra_settings`:
+
+```python
+# config.py — USER PREFERENCE SECTION
+
+# Font family applied to all qutebrowser UI chrome (completion, statusbar, tabs…)
+USER_FONT_FAMILY  = "Iosevka Term"          # or None to keep theme default
+
+# UI chrome font size (passed as a Qt size string like "10pt")
+USER_FONT_SIZE    = "10pt"                  # or None
+
+# Web content default font size in pixels ("16px", "18px", or plain "16")
+# → maps to fonts.web.size.default (int)
+USER_FONT_SIZE_WEB = "16px"                 # or None
+```
+
+These are wired via `UserLayer` at priority 90 and override whatever `AppearanceLayer` (priority 30) set from the theme's `ColorScheme`.
+
+**Why separate `font_size` and `font_size_web`?**
+
+| Variable | qutebrowser key | Unit | Controls |
+|---|---|---|---|
+| `USER_FONT_SIZE` | `fonts.default_size` | Qt string (`"10pt"`) | UI chrome (tabs, statusbar, completion) |
+| `USER_FONT_SIZE_WEB` | `fonts.web.size.default` | integer (pixels) | Default size for web page body text |
+
+They are independent — you can have a compact `"9pt"` UI font while keeping web pages at `18` pixels for readability.
+
+---
+
+## Adding a Custom Context (v8+)
+
+Contexts live entirely in `layers/context.py` — no other file needs changing:
+
+```python
+# layers/context.py — add to ContextMode enum:
+class ContextMode(str, Enum):
+    ...
+    FINANCE = "finance"
+
+# Add to _CONTEXT_TABLE:
+ContextMode.FINANCE: ContextSpec(
+    mode=ContextMode.FINANCE,
+    description="Finance mode — market data, news, portfolio tools",
+    search_engines={
+        "DEFAULT": "https://finance.yahoo.com/search?p={}",
+        "ycharts": "https://ycharts.com/search?search[term]={}",
+        "edgar":   "https://efts.sec.gov/LATEST/search-index?q={}&dateRange=custom",
+        "wsj":     "https://www.wsj.com/search?query={}",
+    },
+    settings_delta={
+        "content.autoplay":              False,
+        "content.notifications.enabled": False,
+        "tabs.show":                     "multiple",
+    },
+    bindings_extra=[],
+),
+```
+
+Then add the switch binding in `_keybindings()`:
+
+```python
+(f"{L}Cf", "spawn --userscript context_switch.py finance", "normal"),
+```
+
+And register it in `scripts/context_switch.py`:
+
+```python
+VALID_CONTEXTS = {..., "finance"}
+_CONTEXT_LABELS["finance"] = "Finance — market data, portfolio"
+```
+
+---
+
 ## User-Facing Config (What Users Actually Touch)
 
 Users edit **only** the `CONFIGURATION SECTION` in `config.py`:
@@ -281,10 +356,24 @@ THEME              = "catppuccin-mocha"    # any name from THEMES / extended
 PRIVACY_PROFILE    = PrivacyProfile.STANDARD
 PERFORMANCE_PROFILE= PerformanceProfile.BALANCED
 LEADER_KEY         = ","
+ACTIVE_CONTEXT     = None                  # or "work"/"dev"/"gaming"/…
 LAYERS             = {"base": True, "user": True, ...}
+
+# Font overrides (v8+)
+USER_FONT_FAMILY   = "Iosevka Term"        # or None
+USER_FONT_SIZE     = "10pt"                # or None
+USER_FONT_SIZE_WEB = "16px"               # or None
 ```
 
-And optionally `layers/user.py` for personal overrides.
+And optionally the `USER PREFERENCE SECTION` for personal overrides:
+
+```python
+USER_EDITOR        = ["kitty", "-e", "nvim", "{}"]
+USER_START_PAGES   = ["https://example.com"]
+USER_ZOOM          = "110%"
+USER_PROXY         = "socks5://127.0.0.1:7897"
+USER_SEARCH_ENGINES= {"gpt": "https://chatgpt.com/?{}"}
+```
 
 Everything else — `core/`, `strategies/`, `policies/`, `themes/`, `keybindings/` —
 is architecture, not configuration. Users who find themselves editing those

@@ -1,7 +1,7 @@
 """
 config.py
 =========
-qutebrowser Configuration Entry Point  (v7)
+qutebrowser Configuration Entry Point  (v8)
 
 This is the **only** file qutebrowser loads directly.
 It is intentionally thin: it wires the architecture and delegates
@@ -31,7 +31,15 @@ Strict-mode notes (Pyright):
   - Lifecycle decorator return values assigned to _ to suppress
     reportUnusedFunction.
 
-v7 changes:
+v8 changes:
+  - Added USER_FONT_FAMILY / USER_FONT_SIZE / USER_FONT_SIZE_UI — first-class
+    font override params (no longer need extra_settings escape hatch for fonts)
+  - Wired HealthReportReadyEvent subscriber: logs full report on errors,
+    brief summary on warnings/infos, silent on clean
+  - Lifecycle hook banner updated to v8
+  - UserLayer constructor call includes font_family/font_size/font_size_ui
+
+v7 changes (retained):
   - HOST_POLICY_DEV is now actually passed to build_default_host_registry
     (was silently ignored — bug fix; the flag existed but had no effect)
   - build_default_host_registry called with include_dev=HOST_POLICY_DEV
@@ -42,7 +50,7 @@ v6 changes (retained):
   - Added USER_FONT_MONO / USER_FONT_SIZE_UI font override hints
   - Added ACTIVE_CONTEXT "writing" to the documented valid values
   - HOST_POLICY_DEV flag added
-  - HealthChecker.default() now runs 12 checks
+  - HealthChecker.default() now runs 15 checks (was 12)
   - Summary banner improved: shows active context + profile
 """
 
@@ -64,6 +72,7 @@ from core.lifecycle import LifecycleHook, LifecycleManager
 from core.protocol  import (
     ConfigErrorEvent,
     Event,
+    HealthReportReadyEvent,
     LayerAppliedEvent,
     MessageRouter,
     ThemeChangedEvent,
@@ -152,10 +161,10 @@ LEADER_KEY = ","
 #   3. ~/.config/qutebrowser/.context file (written by ,C* keybindings)
 #   4. "default" fallback
 #
-# Valid values: None | "default" | "work" | "research" | "media" | "dev" | "writing"
+# Valid values: None | "default" | "work" | "research" | "media" | "dev" | "writing" | "gaming"
 #
 # Switch at runtime:  ,Cw (work)  ,Cr (research)  ,Cm (media)  ,Cd (dev)
-#                     ,Cwt (writing)  ,C0 (reset)  ,Ci (show current)
+#                     ,Cwt (writing)  ,Cg (gaming)  ,C0 (reset)  ,Ci (show current)
 ACTIVE_CONTEXT: Optional[str] = None
 
 # ── Layer enable / disable ────────────────────────────────────────────────────
@@ -200,6 +209,19 @@ USER_START_PAGES: list[str] | None = ["https://www.bilibili.com"]
 # ── Default zoom ──────────────────────────────────────────────────────────────
 # e.g. "100%", "110%", "125%".  None = keep BaseLayer default.
 USER_ZOOM: str | None = None
+
+# ── Font overrides ─────────────────────────────────────────────────────────────
+# Override the font set by AppearanceLayer/theme.
+# USER_FONT_FAMILY:   font family name (e.g. "JetBrainsMono Nerd Font", "Iosevka")
+# USER_FONT_SIZE:     UI chrome font size string (e.g. "10pt", "12pt")
+#                     → maps to fonts.default_size (Qt string, affects qute chrome)
+# USER_FONT_SIZE_WEB: web content default font size (e.g. "16px", "18px", "16")
+#                     → maps to fonts.web.size.default (int, affects page text)
+#                     Accepts "16px", "18px", or plain "16" — all parsed to int.
+# None = keep AppearanceLayer / theme default.
+USER_FONT_FAMILY:   str | None = None
+USER_FONT_SIZE:     str | None = None
+USER_FONT_SIZE_WEB: str | None = None
 
 # ── Spellcheck languages ──────────────────────────────────────────────────────
 # e.g. ["en-US"], ["en-US", "zh-CN"].  None = keep base default.
@@ -377,6 +399,9 @@ def _build_orchestrator() -> ConfigOrchestrator:
             search_engines        = USER_SEARCH_ENGINES,
             search_engines_merge  = USER_SEARCH_ENGINES_MERGE,
             spellcheck_langs      = USER_SPELLCHECK,
+            font_family           = USER_FONT_FAMILY,
+            font_size             = USER_FONT_SIZE,
+            font_size_web         = USER_FONT_SIZE_WEB,
             extra_settings        = USER_EXTRA_SETTINGS or {},
             extra_bindings        = USER_EXTRA_BINDINGS or [],
             extra_aliases         = USER_EXTRA_ALIASES  or {},
@@ -386,7 +411,7 @@ def _build_orchestrator() -> ConfigOrchestrator:
     # ── Lifecycle hooks ───────────────────────────────────────────────
     @lifecycle.decorator(LifecycleHook.POST_APPLY, priority=100)
     def _log_apply_done() -> None:
-        logger.info("✓ qutebrowser config applied successfully (v7)")
+        logger.info("✓ qutebrowser config applied successfully (v8)")
 
     @lifecycle.decorator(LifecycleHook.ON_ERROR, priority=10)
     def _log_error() -> None:
@@ -413,9 +438,25 @@ def _build_orchestrator() -> ConfigOrchestrator:
         if isinstance(e, ThemeChangedEvent):
             logger.info("theme changed: %s", e.theme_name)
 
-    router.events.subscribe(LayerAppliedEvent, _on_layer_applied)
-    router.events.subscribe(ConfigErrorEvent,  _on_config_error)
-    router.events.subscribe(ThemeChangedEvent, _on_theme_changed)
+    def _on_health_ready(e: Event) -> None:
+        """Log a concise health summary; on errors print the full report."""
+        if isinstance(e, HealthReportReadyEvent):
+            if not e.ok:
+                logger.warning(
+                    "[Health] %d error(s)  %d warning(s)  %d info(s) — "
+                    "run :messages for details",
+                    e.error_count, e.warning_count, e.info_count,
+                )
+            elif e.warning_count or e.info_count:
+                logger.info(
+                    "[Health] ✓ (0 errors, %d warning(s), %d info(s))",
+                    e.warning_count, e.info_count,
+                )
+
+    router.events.subscribe(LayerAppliedEvent,      _on_layer_applied)
+    router.events.subscribe(ConfigErrorEvent,       _on_config_error)
+    router.events.subscribe(ThemeChangedEvent,      _on_theme_changed)
+    router.events.subscribe(HealthReportReadyEvent, _on_health_ready)
 
     return ConfigOrchestrator(
         stack         = stack,

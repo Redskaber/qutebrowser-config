@@ -21,6 +21,15 @@ Fix applied vs original:
   which is not a valid qutebrowser color value; those keys are removed.
   The ``"system"`` color type is a *qutebrowser internal enum* that means
   "use the system gradient" and is not user-configurable via config.set().
+
+v9 changes:
+  - ``_font_settings`` now reads ``ColorScheme.font_size_web`` to set
+    ``fonts.web.size.default`` instead of the hard-coded ``16``.
+  - Added ``_parse_px(s)`` helper to convert ``"16px"`` / ``"16"`` strings
+    to the integer pixel value qutebrowser expects for web font sizes.
+  - ``fonts.default_family`` and ``fonts.default_size`` now explicitly set
+    from ``ColorScheme.font_mono`` / ``font_size_ui`` so that UserLayer
+    font overrides (priority=90) correctly replace them.
 """
 
 from __future__ import annotations
@@ -126,6 +135,37 @@ THEMES: Dict[str, ColorScheme] = {
         font_mono="JetBrainsMono Nerd Font", font_sans="Noto Sans",
     ),
 }
+
+
+# ─────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────
+
+def _parse_px(size_str: str) -> int:
+    """
+    Parse a CSS-like pixel size string to an integer.
+
+    Handles:
+      "16px" → 16
+      "16"   → 16
+      " 18 " → 18
+
+    qutebrowser's ``fonts.web.size.*`` keys expect a plain int (pixels).
+    ColorScheme stores ``font_size_web`` as ``"16px"`` for readability;
+    this helper bridges the two representations.
+
+    Raises ValueError if the string cannot be parsed.
+    """
+    s = size_str.strip()
+    if s.endswith("px"):
+        s = s[:-2].strip()
+    try:
+        return int(s)
+    except ValueError:
+        raise ValueError(
+            f"Cannot parse pixel size {size_str!r} — "
+            "expected a string like '16px' or '16'"
+        )
 
 
 # ─────────────────────────────────────────────
@@ -283,11 +323,16 @@ class AppearanceLayer(BaseConfigLayer):
         }
 
     def _font_settings(self, c: ColorScheme) -> ConfigDict:
-        # Use ColorScheme.font_size_ui for UI fonts (was hard-coded to "10pt")
+        # Use ColorScheme.font_size_ui for UI chrome fonts (e.g. "10pt")
         size = c.font_size_ui  # e.g. "10pt", "11pt"
         mono = f"{size} '{c.font_mono}'"
         sans = f"{size} '{c.font_sans}'"
         return {
+            # ── UI chrome fonts ────────────────────────────────
+            # Set fonts.default_family / fonts.default_size explicitly so
+            # UserLayer (priority=90) font_family/font_size overrides apply cleanly.
+            "fonts.default_family":         c.font_mono,
+            "fonts.default_size":           c.font_size_ui,
             "fonts.completion.entry":       mono,
             "fonts.completion.category":    f"bold {mono}",
             "fonts.debug_console":          mono,
@@ -302,13 +347,16 @@ class AppearanceLayer(BaseConfigLayer):
             "fonts.tabs.selected":          mono,
             "fonts.tabs.unselected":        mono,
             "fonts.tooltip":                mono,
+            # ── Web content fonts ──────────────────────────────
             "fonts.web.family.cursive":     c.font_sans,
             "fonts.web.family.fantasy":     c.font_sans,
             "fonts.web.family.fixed":       c.font_mono,
             "fonts.web.family.sans_serif":  c.font_sans,
             "fonts.web.family.serif":       "Georgia",
             "fonts.web.family.standard":    c.font_sans,
-            "fonts.web.size.default":       16,
+            # fonts.web.size.default expects an int (pixels)
+            # ColorScheme.font_size_web is "16px" — parse to int
+            "fonts.web.size.default":       _parse_px(c.font_size_web),
             "fonts.web.size.default_fixed": 13,
             "fonts.web.size.minimum":       0,
         }

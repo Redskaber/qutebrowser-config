@@ -8,6 +8,9 @@ Tests for extension modules:
   - keybindings/catalog
   - layers/user (parameter-injection model)
 
+v8: Added font override param tests (font_family, font_size),
+    empty-editor-list guard test.
+
 Expected: all tests pass with no running qutebrowser instance.
 Run:  python3 tests/test_extensions.py
       pytest tests/test_extensions.py -v
@@ -553,6 +556,53 @@ class TestUserLayerParameterInjection(unittest.TestCase):
         original["tabs.position"] = "left"   # mutate original
         settings = layer.build()["settings"]
         self.assertEqual(settings["tabs.position"], "top")  # layer unchanged
+
+    # ── Font override params (v8) ─────────────────────────────────────
+    def test_font_family_injected(self) -> None:
+        from layers.user import UserLayer
+        layer = UserLayer(font_family="JetBrainsMono Nerd Font")
+        settings = layer.build()["settings"]
+        self.assertEqual(settings["fonts.default_family"], "JetBrainsMono Nerd Font")
+
+    def test_font_size_injected(self) -> None:
+        from layers.user import UserLayer
+        layer = UserLayer(font_size="10pt")
+        settings = layer.build()["settings"]
+        self.assertEqual(settings["fonts.default_size"], "10pt")
+
+    def test_font_size_web_px_injected_as_int(self) -> None:
+        """font_size_web='16px' must produce fonts.web.size.default=16 (int)."""
+        from layers.user import UserLayer
+        layer = UserLayer(font_size_web="16px")
+        settings = layer.build()["settings"]
+        self.assertEqual(settings["fonts.web.size.default"], 16)
+        self.assertIsInstance(settings["fonts.web.size.default"], int)
+
+    def test_font_size_web_plain_int_str(self) -> None:
+        """font_size_web='18' (no suffix) also works."""
+        from layers.user import UserLayer
+        layer = UserLayer(font_size_web="18")
+        settings = layer.build()["settings"]
+        self.assertEqual(settings["fonts.web.size.default"], 18)
+
+    def test_font_family_none_not_in_settings(self) -> None:
+        from layers.user import UserLayer
+        layer = UserLayer(font_family=None)
+        settings = layer.build().get("settings", {})
+        self.assertNotIn("fonts.default_family", settings)
+
+    def test_font_family_whitespace_stripped(self) -> None:
+        from layers.user import UserLayer
+        layer = UserLayer(font_family="  Iosevka  ")
+        settings = layer.build()["settings"]
+        self.assertEqual(settings["fonts.default_family"], "Iosevka")
+
+    def test_empty_editor_list_skipped(self) -> None:
+        """v8: empty editor=[] must not write an invalid value."""
+        from layers.user import UserLayer
+        layer = UserLayer(editor=[])
+        settings = layer.build().get("settings", {})
+        self.assertNotIn("editor.command", settings)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

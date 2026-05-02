@@ -11,6 +11,7 @@ and behavioral overrides.  Switching contexts is a single-key action:
   ,Cr  → research (arXiv, Scholar, Wikipedia-heavy, no distractions)
   ,Cm  → media  (YouTube, Bilibili, autoplay on)
   ,Cd  → dev    (GitHub, npm, MDN, crates, DevDocs)
+  ,Cg  → gaming (Steam, Twitch, GoG, ProtonDB, AreWeGameYet)   [v8]
   ,C0  → reset  (return to default / base context)
   ,Ci  → show active context in message bar
 
@@ -33,12 +34,18 @@ Patterns: Strategy (context as spec), Data-Driven, State (active context).
 
 Strict-mode: all attrs typed; ContextSpec is frozen dataclass.
 
-v6 changes:
+v8 changes:
+  - Added GAMING context: Steam, Twitch, ProtonDB, AreWeGameYet search;
+    autoplay ON; notifications OFF; fullscreen-on-request enabled.
+  - Updated ,Cg keybinding for gaming context switching.
+  - ContextMode members sorted by priority-of-use for readability.
+
+v6 changes (retained):
   - _resolve_active_mode now reads ~/.config/qutebrowser/.context file
     (previously only env var + constructor param were checked — file was
     written by context_switch.py but never read back)
   - Added WRITING context (focus / reference / no distractions)
-  - Added ,Cwr binding for writing context
+  - Added ,Cwt binding for writing context
   - ContextSpec.bindings_extra uses proper List[Tuple[str,str,str]] type
   - _CONTEXT_FILE_ENV for override (useful in tests / NixOS)
 """
@@ -74,6 +81,7 @@ class ContextMode(str, Enum):
     MEDIA    = "media"
     DEV      = "dev"
     WRITING  = "writing"
+    GAMING   = "gaming"
 
 
 # ─────────────────────────────────────────────
@@ -215,6 +223,30 @@ _CONTEXT_TABLE: Dict[ContextMode, ContextSpec] = {
             "content.notifications.enabled": False,
             "statusbar.show":                "in-mode",
             "tabs.show":                     "multiple",
+        },
+        bindings_extra=[],
+    ),
+
+    ContextMode.GAMING: ContextSpec(
+        mode=ContextMode.GAMING,
+        description="Gaming mode — Steam, Twitch, ProtonDB, compatibility search",
+        search_engines={
+            "DEFAULT": "https://store.steampowered.com/search/?term={}",
+            "steam":   "https://store.steampowered.com/search/?term={}",
+            "twitch":  "https://www.twitch.tv/search?term={}",
+            "gog":     "https://www.gog.com/en/games?query={}",
+            "proton":  "https://www.protondb.com/search#{}",
+            "awgy":    "https://arewegameyet.rs/#search={}",
+            "lutris":  "https://lutris.net/games?q={}",
+            "wiki":    "https://en.wikipedia.org/w/index.php?search={}",
+            "yt":      "https://www.youtube.com/results?search_query={}",
+        },
+        settings_delta={
+            "content.autoplay":                   True,
+            "content.notifications.enabled":      False,
+            # Allow fullscreen requests (important for in-browser game launchers)
+            "content.fullscreen.window":          True,
+            "tabs.show":                          "always",
         },
         bindings_extra=[],
     ),
@@ -364,6 +396,7 @@ class ContextLayer(BaseConfigLayer):
             (f"{L}Cr",  "spawn --userscript context_switch.py research", "normal"),
             (f"{L}Cm",  "spawn --userscript context_switch.py media",    "normal"),
             (f"{L}Cwt", "spawn --userscript context_switch.py writing",  "normal"),
+            (f"{L}Cg",  "spawn --userscript context_switch.py gaming",   "normal"),
             (f"{L}C0",  "spawn --userscript context_switch.py default",  "normal"),
             # Show current context in message bar
             (f"{L}Ci",
@@ -375,6 +408,11 @@ class ContextLayer(BaseConfigLayer):
         return switch_bindings + list(self._spec.bindings_extra)
 
     # ── Introspection ──────────────────────────────────────────────────
+
+    @classmethod
+    def available_contexts(cls) -> List[str]:
+        """Return the list of valid context names (sorted)."""
+        return sorted(mode.value for mode in _CONTEXT_TABLE)
 
     def describe(self) -> str:
         """Human-readable description of active context."""

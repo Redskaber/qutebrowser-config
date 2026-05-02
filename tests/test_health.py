@@ -7,6 +7,10 @@ v5: Added tests for new checks:
   EditorCommandCheck, SearchEngineUrlCheck, DownloadDirCheck,
   TabTitleFormatCheck, HealthReport.full_report().
 
+v8: Added tests for new checks:
+  FontFamilyCheck, SpellcheckLangCheck, ContentHeaderCheck.
+  Added GAMING context tests.
+
 Run: python3 tests/test_health.py
      pytest tests/test_health.py -v
 """
@@ -191,6 +195,83 @@ class TestIndividualChecks(unittest.TestCase):
         issues = self._run("TabTitleFormatCheck", {})
         self.assertEqual(len(issues), 0)
 
+    # ── FontFamilyCheck (v8) ──────────────────────────────────────────
+    def test_font_family_empty_warns(self) -> None:
+        issues = self._run("FontFamilyCheck", {"fonts.default_family": ""})
+        self.assertGreater(len(issues), 0)
+
+    def test_font_family_whitespace_warns(self) -> None:
+        issues = self._run("FontFamilyCheck", {"fonts.default_family": "   "})
+        self.assertGreater(len(issues), 0)
+
+    def test_font_family_valid_ok(self) -> None:
+        issues = self._run("FontFamilyCheck", {
+            "fonts.default_family": "JetBrainsMono Nerd Font"
+        })
+        self.assertEqual(len(issues), 0)
+
+    def test_font_family_absent_ok(self) -> None:
+        issues = self._run("FontFamilyCheck", {})
+        self.assertEqual(len(issues), 0)
+
+    def test_font_family_wrong_type_warns(self) -> None:
+        issues = self._run("FontFamilyCheck", {"fonts.default_family": 42})
+        self.assertGreater(len(issues), 0)
+
+    # ── SpellcheckLangCheck (v8) ──────────────────────────────────────
+    def test_spellcheck_valid_bcp47_ok(self) -> None:
+        issues = self._run("SpellcheckLangCheck", {
+            "spellcheck.languages": ["en-US", "zh-CN", "de"]
+        })
+        self.assertEqual(len(issues), 0)
+
+    def test_spellcheck_invalid_tag_warns(self) -> None:
+        issues = self._run("SpellcheckLangCheck", {
+            "spellcheck.languages": ["english"]
+        })
+        from core.health import Severity
+        self.assertTrue(any(i.severity == Severity.WARNING for i in issues))
+
+    def test_spellcheck_not_list_errors(self) -> None:
+        issues = self._run("SpellcheckLangCheck", {
+            "spellcheck.languages": "en-US"
+        })
+        from core.health import Severity
+        self.assertTrue(any(i.severity == Severity.ERROR for i in issues))
+
+    def test_spellcheck_absent_ok(self) -> None:
+        issues = self._run("SpellcheckLangCheck", {})
+        self.assertEqual(len(issues), 0)
+
+    def test_spellcheck_multiple_invalid_reports_all(self) -> None:
+        issues = self._run("SpellcheckLangCheck", {
+            "spellcheck.languages": ["english", "CHINESE_SIMPLIFIED"]
+        })
+        self.assertEqual(len(issues), 2)
+
+    # ── ContentHeaderCheck (v8) ───────────────────────────────────────
+    def test_content_header_empty_ua_warns(self) -> None:
+        issues = self._run("ContentHeaderCheck", {
+            "content.headers.user_agent": ""
+        })
+        self.assertGreater(len(issues), 0)
+
+    def test_content_header_whitespace_ua_warns(self) -> None:
+        issues = self._run("ContentHeaderCheck", {
+            "content.headers.user_agent": "   "
+        })
+        self.assertGreater(len(issues), 0)
+
+    def test_content_header_valid_ua_ok(self) -> None:
+        issues = self._run("ContentHeaderCheck", {
+            "content.headers.user_agent": "Mozilla/5.0 (compatible)"
+        })
+        self.assertEqual(len(issues), 0)
+
+    def test_content_header_absent_ok(self) -> None:
+        issues = self._run("ContentHeaderCheck", {})
+        self.assertEqual(len(issues), 0)
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # HealthChecker Tests
@@ -212,9 +293,10 @@ class TestHealthChecker(unittest.TestCase):
 
     def test_checker_can_add_custom_check(self) -> None:
         from core.health import HealthCheck, HealthChecker, HealthReport, HealthIssue, Severity
-
         class AlwaysWarn(HealthCheck):
-            name = "always-warn"
+            @property
+            def name(self) -> str:
+                return "always-warn"
             def run(self, settings, report):  # type: ignore[override]
                 report.add(HealthIssue(check=self.name, severity=Severity.WARNING, message="test"))
 
@@ -224,9 +306,10 @@ class TestHealthChecker(unittest.TestCase):
 
     def test_broken_check_doesnt_crash_checker(self) -> None:
         from core.health import HealthCheck, HealthChecker, Severity
-
         class Crasher(HealthCheck):
-            name = "crasher"
+            @property
+            def name(self) -> str:
+                return "crasher"
             def run(self, settings, report):  # type: ignore[override]
                 raise RuntimeError("intentional crash")
 
@@ -254,9 +337,10 @@ class TestHealthChecker(unittest.TestCase):
 
     def test_health_report_full_report(self) -> None:
         from core.health import HealthChecker, HealthCheck, HealthReport, HealthIssue, Severity
-
         class MultiIssue(HealthCheck):
-            name = "multi"
+            @property
+            def name(self) -> str:
+                return "multi"
             def run(self, settings, report):  # type: ignore[override]
                 report.add(HealthIssue(check=self.name, severity=Severity.INFO,    message="info"))
                 report.add(HealthIssue(check=self.name, severity=Severity.WARNING, message="warn"))
@@ -377,6 +461,53 @@ class TestContextLayer(unittest.TestCase):
         stack.register(ContextLayer(context="dev"))
         resolved = stack.resolve()
         self.assertIn("context", resolved)
+
+    # ── GAMING context (v8) ───────────────────────────────────────────
+    def test_gaming_context_exists(self) -> None:
+        from layers.context import ContextMode
+        self.assertIn("gaming", [m.value for m in ContextMode])
+
+    def test_gaming_context_resolves(self) -> None:
+        from layers.context import ContextLayer, ContextMode
+        layer = ContextLayer(context="gaming")
+        self.assertEqual(layer.active_mode, ContextMode.GAMING)
+
+    def test_gaming_context_has_steam_engine(self) -> None:
+        from layers.context import ContextLayer
+        layer = ContextLayer(context="gaming")
+        settings = layer.build().get("settings", {})
+        engines = settings.get("url.searchengines", {})
+        self.assertIn("steam", engines)
+
+    def test_gaming_context_has_proton_engine(self) -> None:
+        from layers.context import ContextLayer
+        layer = ContextLayer(context="gaming")
+        settings = layer.build().get("settings", {})
+        engines = settings.get("url.searchengines", {})
+        self.assertIn("proton", engines)
+
+    def test_gaming_context_autoplay_on(self) -> None:
+        from layers.context import ContextLayer
+        layer = ContextLayer(context="gaming")
+        settings = layer.build().get("settings", {})
+        self.assertTrue(settings.get("content.autoplay", False))
+
+    def test_gaming_context_fullscreen_enabled(self) -> None:
+        from layers.context import ContextLayer
+        layer = ContextLayer(context="gaming")
+        settings = layer.build().get("settings", {})
+        self.assertTrue(settings.get("content.fullscreen.window", False))
+
+    def test_gaming_keybinding_registered(self) -> None:
+        from layers.context import ContextLayer
+        layer = ContextLayer(context="default", leader=",")
+        bindings = layer.build().get("keybindings", [])
+        keys = {b[0] for b in bindings}
+        self.assertIn(",Cg", keys)
+
+    def test_seven_contexts_in_table(self) -> None:
+        from layers.context import _CONTEXT_TABLE
+        self.assertEqual(len(_CONTEXT_TABLE), 7)
 
 
 if __name__ == "__main__":

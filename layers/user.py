@@ -35,6 +35,20 @@ search_engines merge semantics:
   Set search_engines_merge=False to REPLACE the entire engine map entirely
   (UserLayer writes the full set; lower-layer engines are discarded).
 
+v8 changes:
+  - Added font_family, font_size, font_size_web constructor parameters so
+    font overrides no longer require using the extra_settings escape hatch.
+    font_family  → fonts.default_family  (string: font family name)
+    font_size    → fonts.default_size    (string: "10pt", UI chrome size)
+    font_size_web→ fonts.web.size.default (int: web content px size, e.g. 16)
+    Previously named font_size_ui — renamed to font_size_web for clarity:
+    fonts.web.size.default controls *web content* text size, not UI chrome.
+  - Fixed font_size_web parse: `str.rstrip("pt px")` strips individual chars
+    and was silently incorrect on "16px" input (gave "1" not "16"). Now uses
+    a proper suffix-strip via the shared _parse_size_to_int() helper.
+  - Defensive guard: if editor is an empty list, UserLayer skips it (avoids
+    writing an invalid value that EditorCommandCheck would flag as an error).
+
 v7 changes:
   - search_engines_merge logic fixed: previously both True and False branches
     executed identical code (``settings["url.searchengines"] = self._search_engines``),
@@ -63,6 +77,25 @@ ConfigDict  = Dict[str, Any]
 BindingList = List[Tuple[str, str, str]]
 
 logger = logging.getLogger("qute.layers.user")
+
+
+def _parse_size_to_int(size_str: str) -> int:
+    """
+    Parse a CSS-like pixel size string to an int for fonts.web.size.*.
+
+    "16px" → 16  |  "18" → 18  |  " 14 " → 14
+
+    str.rstrip("px") is NOT safe for this: it strips individual chars,
+    so "16px" → "16" (works by accident) but "12pt" → "12" (wrong unit)
+    and hypothetical " 1px" → " 1" → int fails with whitespace.
+    This helper does a proper suffix-strip.
+    """
+    s = size_str.strip()
+    for suffix in ("px", "pt"):
+        if s.endswith(suffix):
+            s = s[: -len(suffix)].strip()
+            break
+    return int(s)
 
 
 class UserLayer(BaseConfigLayer):
@@ -113,19 +146,26 @@ class UserLayer(BaseConfigLayer):
         search_engines:       Optional[ConfigDict]  = None,
         search_engines_merge: bool                  = True,
         spellcheck_langs:     Optional[List[str]]   = None,
+        font_family:          Optional[str]         = None,
+        font_size:            Optional[str]         = None,
+        font_size_web:        Optional[str]         = None,
         extra_settings:       Optional[ConfigDict]  = None,
         extra_bindings:       Optional[BindingList] = None,
         extra_aliases:        Optional[ConfigDict]  = None,
         github_username:      str                   = "redskaber",
     ) -> None:
         self._leader               = leader
-        self._editor               = editor
+        # v8: skip empty editor list — EditorCommandCheck would flag it as ERROR
+        self._editor               = editor if editor else None
         self._start_pages          = start_pages
         self._zoom                 = zoom
         self._proxy                = self._validate_proxy(proxy)
         self._search_engines       = dict(search_engines)   if search_engines   else None
         self._search_engines_merge = search_engines_merge
         self._spellcheck_langs     = list(spellcheck_langs) if spellcheck_langs else None
+        self._font_family          = font_family.strip()    if font_family       else None
+        self._font_size            = font_size.strip()      if font_size         else None
+        self._font_size_web        = font_size_web.strip()  if font_size_web     else None
         self._extra_settings       = dict(extra_settings)   if extra_settings   else {}
         self._extra_bindings       = list(extra_bindings)   if extra_bindings   else []
         self._extra_aliases        = dict(extra_aliases)    if extra_aliases    else {}
@@ -225,6 +265,27 @@ class UserLayer(BaseConfigLayer):
         # ── Spellcheck ────────────────────────────────────────────────────
         if self._spellcheck_langs is not None:
             settings["spellcheck.languages"] = self._spellcheck_langs
+
+        # ── Font overrides (v8) ───────────────────────────────────────────
+        # Prefer these over putting fonts in extra_settings — they are
+        # validated by FontFamilyCheck and give a clear parameter name.
+        #
+        # font_family → fonts.default_family  (string: "JetBrainsMono Nerd Font")
+        # font_size   → fonts.default_size    (string: "10pt" — UI chrome size)
+        # font_size_web → fonts.web.size.default (int: pixel size for web content)
+        if self._font_family:
+            settings["fonts.default_family"] = self._font_family
+            logger.debug("[UserLayer] font_family: %r", self._font_family)
+        if self._font_size:
+            settings["fonts.default_size"] = self._font_size
+            logger.debug("[UserLayer] font_size: %r", self._font_size)
+        if self._font_size_web:
+            try:
+                settings["fonts.web.size.default"] = _parse_size_to_int(self._font_size_web)
+                logger.debug("[UserLayer] font_size_web: %r → %d px",
+                             self._font_size_web, settings["fonts.web.size.default"])
+            except ValueError as exc:
+                logger.warning("[UserLayer] font_size_web ignored: %s", exc)
 
         # ── Extra settings (escape hatch) ─────────────────────────────────
         if self._extra_settings:

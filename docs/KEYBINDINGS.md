@@ -156,6 +156,19 @@ To see all bindings in the running browser: `:bind`
 | `,p` | userscript pass fill                      | behavior |
 | `,P` | userscript pass OTP                       | behavior |
 
+### Context Switching (`,C` prefix)
+
+| Key    | Context  | Description                                   | Layer   |
+| ------ | -------- | --------------------------------------------- | ------- |
+| `,Cw`  | work     | Corporate tools, Jira, Google search          | context |
+| `,Cr`  | research | arXiv, Scholar, Wikipedia, distraction-free   | context |
+| `,Cm`  | media    | YouTube, Bilibili, Twitch; autoplay ON        | context |
+| `,Cd`  | dev      | GitHub, MDN, crates, npm, DevDocs             | context |
+| `,Cwt` | writing  | Dict, Thesaurus, Grammarly, focus mode        | context |
+| `,Cg`  | gaming   | Steam, Twitch, ProtonDB, fullscreen ON *(v8)* | context |
+| `,C0`  | default  | Reset to base settings                        | context |
+| `,Ci`  | —        | Show current context in message bar           | context |
+
 ---
 
 ## Insert Mode
