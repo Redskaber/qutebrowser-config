@@ -56,12 +56,12 @@ import logging
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
+from core.types import ConfigDict
 from core.layer import BaseConfigLayer
+from keybindings.catalog import Keybind
 
-ConfigDict  = Dict[str, Any]
-BindingList = List[Tuple[str, str, str]]
 EngineMap   = Dict[str, str]
 
 logger = logging.getLogger("qute.layers.context")
@@ -101,10 +101,10 @@ class ContextSpec:
         bindings_extra: Additional (key, command, mode) tuples for this context.
     """
     mode:           ContextMode
-    description:    str         = ""
-    search_engines: EngineMap   = field(default_factory=dict[str, str])
-    settings_delta: ConfigDict  = field(default_factory=dict[str, Any])
-    bindings_extra: BindingList = field(default_factory=list[tuple[str, str, str]])
+    description:    str           = ""
+    search_engines: EngineMap     = field(default_factory=dict[str, str])
+    settings_delta: ConfigDict    = field(default_factory=dict[str, Any])
+    bindings_extra: List[Keybind] = field(default_factory=list[Keybind])
 
 
 # ─────────────────────────────────────────────
@@ -385,11 +385,11 @@ class ContextLayer(BaseConfigLayer):
 
         return settings
 
-    def _keybindings(self) -> BindingList:
+    def _keybindings(self) -> List[Keybind]:
         L = self._leader
 
         # ── Context switching bindings (always registered) ─────────────
-        switch_bindings: BindingList = [
+        switch_bindings = [
             # ,C prefix = Context switch
             (f"{L}Cd",  "spawn --userscript context_switch.py dev",      "normal"),
             (f"{L}Cw",  "spawn --userscript context_switch.py work",     "normal"),

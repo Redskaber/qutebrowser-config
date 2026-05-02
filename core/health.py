@@ -62,11 +62,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
 import re
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, List, Optional, cast
+
+from core.types import ConfigDict
 
 logger = logging.getLogger("qute.health")
-
-ConfigDict = Dict[str, Any]
 
 
 class Severity(Enum):

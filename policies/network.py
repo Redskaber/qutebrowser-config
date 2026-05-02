@@ -15,7 +15,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional, cast
 
-from core.strategy import Policy, PolicyAction, PolicyChain, PolicyDecision, ConfigDict
+from core.types import ConfigDict
+from core.strategy import Policy, PolicyAction, PolicyChain, PolicyDecision
 from layers.privacy import PrivacyProfile
 
 logger = logging.getLogger("qute.policies.network")

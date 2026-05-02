@@ -31,13 +31,12 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, Tuple, cast
+from typing import Dict, Iterator, List, Optional, cast
 
+from core.types import ConfigDict, Keybind
 from .pipeline import ConfigPacket, Pipeline
 
 logger = logging.getLogger("qute.layer")
-
-ConfigDict = Dict[str, Any]
 
 
 # ─────────────────────────────────────────────
@@ -110,7 +109,7 @@ class LayerStack:
         final = stack.resolve()
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._records: List[LayerRecord] = []
 
     def register(
@@ -254,7 +253,7 @@ class BaseConfigLayer(LayerProtocol, ABC):
     def _settings(self) -> ConfigDict:
         return {}
 
-    def _keybindings(self) -> List[Tuple[str, str, str]]:
+    def _keybindings(self) -> List[Keybind]:
         # [(key, command, mode), ...]
         return []
 
@@ -318,5 +317,3 @@ def _deep_merge(
             # priority layer must win outright.
             result[k] = v
     return result
-
-

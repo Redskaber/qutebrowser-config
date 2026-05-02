@@ -18,7 +18,8 @@ from __future__ import annotations
 import logging
 from typing import Dict, cast
 
-from core.strategy import ConfigDict, Strategy, StrategyRegistry
+from core.types import ConfigDict
+from core.strategy import Strategy, StrategyRegistry
 
 logger = logging.getLogger("qute.strategies.search")
 

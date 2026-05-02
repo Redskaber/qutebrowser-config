@@ -44,11 +44,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, TypeVar, cast
 
+from core.types import ConfigDict
+
 logger = logging.getLogger("qute.pipeline")
 
 T = TypeVar("T")
-ConfigDict = Dict[str, Any]
-
 
 # ─────────────────────────────────────────────
 # Domain Types

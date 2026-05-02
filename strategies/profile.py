@@ -29,7 +29,8 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any, Dict
 
-from core.strategy import ConfigDict, Strategy, StrategyRegistry
+from core.types import ConfigDict
+from core.strategy import Strategy, StrategyRegistry
 from layers.privacy import PrivacyProfile
 from layers.performance import PerformanceProfile
 

@@ -42,11 +42,11 @@ v8 changes (retained):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
+from core.types import ConfigDict
 from core.layer import BaseConfigLayer
-
-ConfigDict = Dict[str, Any]
+from keybindings.catalog import Keybind
 
 
 # ─────────────────────────────────────────────
@@ -145,7 +145,7 @@ class BehaviorLayer(BaseConfigLayer):
             ],
         }
 
-    def _keybindings(self) -> List[Tuple[str, str, str]]:
+    def _keybindings(self) -> List[Keybind]:
         L = self._leader
         return [
             # ── Navigation ────────────────────────────────────────────────

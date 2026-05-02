@@ -32,12 +32,12 @@ Fixes applied vs original:
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Any, Dict, List, Tuple
+from typing import List
 
+from core.types import ConfigDict
 from core.layer import BaseConfigLayer
-from core.pipeline import LogStage, Pipeline, ValidateStage  # ConfigPacket
-
-ConfigDict = Dict[str, Any]
+from core.pipeline import LogStage, Pipeline, ValidateStage
+from keybindings.catalog import Keybind  # ConfigPacket
 
 
 class PrivacyProfile(Enum):
@@ -119,7 +119,7 @@ class PrivacyLayer(BaseConfigLayer):
             "content.headers.user_agent": (
                 "Mozilla/5.0 ({os_info}) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0 Safari/537.36"
+                "Chrome/134.0 Safari/537.36"
             ),
 
             # ── Network ───────────────────────────────────────
@@ -167,17 +167,17 @@ class PrivacyLayer(BaseConfigLayer):
         }
 
     # ── Keybindings ───────────────────────────────────────────────────
-    def _keybindings(self) -> List[Tuple[str, str, str]]:
+    def _keybindings(self) -> List[Keybind]:
         L = self._leader
         return [
             # Toggle JavaScript
-            (f"{L}j", "config-cycle content.javascript.enabled true false",   "normal"),
+            (f"{L}j", "config-cycle content.javascript.enabled true false",         "normal"),
             # Toggle images
-            (f"{L}i", "config-cycle content.images true false",               "normal"),
+            (f"{L}i", "config-cycle content.images true false",                     "normal"),
             # Cycle cookie policy
-            (f"{L}c", "config-cycle content.cookies.accept all no-3rdparty never", "normal"),
+            (f"{L}c", "config-cycle content.cookies.accept all no-3rdparty never",  "normal"),
             # Force HTTPS reload
-            (f"{L}s", "open https://{host}",                                  "normal"),
+            (f"{L}s", "open https://{host}",                                        "normal"),
         ]
 
     # ── Pipeline (layer-level validation) ─────────────────────────────

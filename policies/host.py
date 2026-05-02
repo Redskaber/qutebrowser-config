@@ -35,9 +35,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List
 
-logger = logging.getLogger("qute.policies.host")
+from core.types import ConfigDict
 
-ConfigDict = Dict[str, Any]
+logger = logging.getLogger("qute.policies.host")
 
 
 # ─────────────────────────────────────────────

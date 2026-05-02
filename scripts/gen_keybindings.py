@@ -22,6 +22,17 @@ import argparse
 import os
 import sys
 from datetime import datetime
+from typing import List, Optional
+
+# ── Imports ───────────────────────────────────────────────────────────────────
+from core.layer          import LayerProtocol
+
+from keybindings.catalog import KeybindingCatalog
+from layers.base         import BaseLayer
+from layers.behavior     import BehaviorLayer
+from layers.context      import ContextLayer
+from layers.privacy      import PrivacyLayer, PrivacyProfile
+from layers.user         import UserLayer
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 _here = os.path.dirname(os.path.abspath(__file__))
@@ -29,33 +40,19 @@ _root = os.path.dirname(_here)
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-# ── Imports ───────────────────────────────────────────────────────────────────
-from keybindings.catalog import KeybindingCatalog
-from layers.base         import BaseLayer
-from layers.behavior     import BehaviorLayer
-from layers.privacy      import PrivacyLayer, PrivacyProfile
-from layers.user         import UserLayer
-
-# ContextLayer is optional (graceful fallback)
-try:
-    from layers.context import ContextLayer
-    _CONTEXT_AVAILABLE = True
-except ImportError:
-    _CONTEXT_AVAILABLE = False
-
 
 def build_catalog(
     leader: str = ",",
-    context: str | None = None,
+    context: Optional[str] = None,
 ) -> KeybindingCatalog:
     """Build the keybinding catalog from all relevant layers."""
-    layers = [
+    layers: List[LayerProtocol] = [
         BaseLayer(),
         PrivacyLayer(profile=PrivacyProfile.STANDARD, leader=leader),
         BehaviorLayer(leader=leader),
     ]
 
-    if _CONTEXT_AVAILABLE and context is not None:
+    if context is not None:
         layers.append(ContextLayer(context=context, leader=leader))
 
     layers.append(UserLayer(leader=leader))
@@ -63,14 +60,14 @@ def build_catalog(
     return KeybindingCatalog.from_layers(layers)
 
 
-def _layer_summary(context: str | None) -> str:
+def _layer_summary(context: Optional[str]) -> str:
     """Generate a brief layer summary section."""
     layers_desc = [
         "| base [p=10]        | Foundational navigation, open, yank, zoom |",
         "| privacy [p=20]     | Privacy toggle keybindings                 |",
         "| behavior [p=40]    | Vim-style UX, tabs, hints, leader bindings |",
     ]
-    if _CONTEXT_AVAILABLE and context is not None:
+    if context is not None:
         layers_desc.append(
             f"| context [p=45]     | Context-switch bindings (active: {context})        |"
         )
@@ -87,7 +84,7 @@ def _layer_summary(context: str | None) -> str:
 
 def generate_markdown(
     catalog: KeybindingCatalog,
-    context: str | None = None,
+    context: Optional[str] = None,
 ) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = [

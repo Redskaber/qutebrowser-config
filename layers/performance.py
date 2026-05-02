@@ -29,11 +29,9 @@ v6 changes:
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Any, Dict
 
+from core.types import ConfigDict
 from core.layer import BaseConfigLayer
-
-ConfigDict = Dict[str, Any]
 
 
 class PerformanceProfile(Enum):

@@ -151,8 +151,9 @@ class TestIncrementalApplier(unittest.TestCase):
 
     def test_apply_only_changed(self):
         applied: dict[str, Any] = {}
-        def apply_fn(key: str, value: Any):
+        def apply_fn(key: str, value: Any) -> List[str]:
             applied[key] = value
+            return []
 
         self.applier.record({"a": 1, "b": 2}, "v1")
         self.applier.record({"a": 1, "b": 99, "c": 3}, "v2")
@@ -168,8 +169,8 @@ class TestIncrementalApplier(unittest.TestCase):
         self.assertIn("c", applied)
 
     def test_observer_called_on_changes(self):
-        def apply_fn(k: Any, v: Any) -> None:
-            pass
+        def apply_fn(k: str, v: Any) -> List[str]:
+            return []
         observed: List[Any] = []
         self.applier.on_changes(observed.append)
         self.applier.record({"x": 1}, "v1")

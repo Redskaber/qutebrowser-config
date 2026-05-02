@@ -69,11 +69,6 @@ import os
 import sys
 from typing import Any, Optional
 
-# ── Make all sub-packages importable ──────────────────────────────────────────
-_config_dir = os.path.dirname(os.path.abspath(__file__))
-if _config_dir not in sys.path:
-    sys.path.insert(0, _config_dir)
-
 # ── Architecture ──────────────────────────────────────────────────────────────
 from core.layer     import LayerStack
 from core.lifecycle import LifecycleHook, LifecycleManager
@@ -94,32 +89,21 @@ from core.state import ConfigStateMachine
 from layers.appearance  import AppearanceLayer
 from layers.base        import BaseLayer
 from layers.behavior    import BehaviorLayer
+from layers.context     import ContextLayer #, ContextMode
 from layers.performance import PerformanceLayer, PerformanceProfile
 from layers.privacy     import PrivacyLayer, PrivacyProfile
 from layers.user        import UserLayer
 
 from orchestrator import ConfigApplier, ConfigOrchestrator
+from themes.extended import register_all_themes
+from policies.host import HostPolicyRegistry, build_default_host_registry as _build_host_registry
 
-# ── Optional: ContextLayer (graceful fallback if context.py absent) ──────────
-try:
-    from layers.context import ContextLayer, ContextMode
-    _CONTEXT_LAYER_AVAILABLE = True
-except ImportError:
-    _CONTEXT_LAYER_AVAILABLE = False
 
-# ── Extended themes (optional; graceful fallback if themes/ absent) ───────────
-try:
-    from themes.extended import register_all_themes
-    register_all_themes()
-except ImportError:
-    pass
+# ── Make all sub-packages importable ──────────────────────────────────────────
+_config_dir = os.path.dirname(os.path.abspath(__file__))
+if _config_dir not in sys.path:
+    sys.path.insert(0, _config_dir)
 
-# ── Host policy registry (optional; graceful fallback) ────────────────────────
-try:
-    from policies.host import HostPolicyRegistry, build_default_host_registry as _build_host_registry
-    _HOST_REGISTRY_AVAILABLE = True
-except ImportError:
-    _HOST_REGISTRY_AVAILABLE = False
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -128,6 +112,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("qute.config")
 
+register_all_themes()
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                       CONFIGURATION SECTION                              ║
@@ -350,14 +335,12 @@ def _build_orchestrator() -> ConfigOrchestrator:
     fsm       = ConfigStateMachine()
 
     # ── Host Policy Registry ──────────────────────────────────────────
-    host_registry: Optional[HostPolicyRegistry] = None  # type: ignore[name-defined]
-    if _HOST_REGISTRY_AVAILABLE:
-        host_registry = _build_host_registry(  # type: ignore[possibly-undefined]
-            include_login  = HOST_POLICY_LOGIN,
-            include_social = HOST_POLICY_SOCIAL,
-            include_media  = HOST_POLICY_MEDIA,
-            include_dev    = HOST_POLICY_DEV,
-        )
+    host_registry: HostPolicyRegistry = _build_host_registry(  # type: ignore[possibly-undefined]
+        include_login  = HOST_POLICY_LOGIN,
+        include_social = HOST_POLICY_SOCIAL,
+        include_media  = HOST_POLICY_MEDIA,
+        include_dev    = HOST_POLICY_DEV,
+    )
 
     # ── Layer Stack ───────────────────────────────────────────────────
     stack = LayerStack()
@@ -374,11 +357,8 @@ def _build_orchestrator() -> ConfigOrchestrator:
     if LAYERS.get("behavior"):
         stack.register(BehaviorLayer(leader=LEADER_KEY))
 
-    if LAYERS.get("context") and _CONTEXT_LAYER_AVAILABLE:
-        stack.register(ContextLayer(
-            context = ACTIVE_CONTEXT,
-            leader  = LEADER_KEY,
-        ))
+    if LAYERS.get("context"):
+        stack.register(ContextLayer(context=ACTIVE_CONTEXT, leader=LEADER_KEY))
 
     if LAYERS.get("performance"):
         stack.register(PerformanceLayer(profile=PERFORMANCE_PROFILE))

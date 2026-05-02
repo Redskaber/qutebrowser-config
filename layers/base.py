@@ -45,11 +45,11 @@ v6 changes (retained):
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List
 
+from core.types import ConfigDict
 from core.layer import BaseConfigLayer
-
-ConfigDict = Dict[str, Any]
+from keybindings.catalog import Keybind
 
 
 class BaseLayer(BaseConfigLayer):
@@ -204,7 +204,7 @@ class BaseLayer(BaseConfigLayer):
 
     # ── Keybindings ───────────────────────────────────────────────────
 
-    def _keybindings(self) -> List[Tuple[str, str, str]]:
+    def _keybindings(self) -> List[Keybind]:
         """
         Essential base-layer keybindings.
 

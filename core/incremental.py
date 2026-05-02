@@ -49,11 +49,11 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Union, cast
+from typing import Any, Callable, List, Optional, Union
+
+from core.types import ConfigDict
 
 logger = logging.getLogger("qute.incremental")
-
-ConfigDict = Dict[str, Any]
 
 # Legacy type alias kept for callers that reference it explicitly.
 # v9.1: apply_delta() now also accepts (key,val)→None; use Callable[..., Any].
@@ -420,7 +420,7 @@ class IncrementalApplier:
     def apply_delta(
         self,
         changes:  List[ConfigChange],
-        apply_fn: Callable[..., Any],
+        apply_fn: ApplyFn,
     ) -> List[str]:
         """
         Apply ADDED and CHANGED keys via *apply_fn*.
@@ -445,9 +445,8 @@ class IncrementalApplier:
                 if change.new_value is None:
                     continue
                 try:
-                    result = apply_fn(change.key, change.new_value)
-                    if isinstance(result, list) and result:
-                        result = cast(list[Any], result)
+                    result: List[str] = apply_fn(change.key, change.new_value)
+                    if isinstance(result, list) and result: # type: ignore[runtime]
                         all_errors.extend(result)
                         logger.warning(
                             "[IncrementalApplier] %s %s: %d error(s)",

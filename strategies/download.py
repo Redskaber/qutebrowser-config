@@ -18,7 +18,8 @@ import logging
 import shutil
 from typing import Any, Dict
 
-from core.strategy import ConfigDict, Strategy, StrategyRegistry
+from core.types import ConfigDict
+from core.strategy import Strategy, StrategyRegistry
 
 logger = logging.getLogger("qute.strategies.download")
 

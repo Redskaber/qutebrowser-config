@@ -18,11 +18,13 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
+
+from core.types import ConfigDict, Keybind
+from core.layer import LayerProtocol
+
 
 logger = logging.getLogger("qute.keybindings.catalog")
-
-LayerProtocol = Any  # avoid circular import; duck-typed
 
 
 @dataclass(frozen=True)
@@ -66,10 +68,10 @@ class KeybindingCatalog:
 
         for layer in sorted_layers:
             try:
-                data = layer.build()
-                bindings: List[Tuple[str, str, str]] = data.get("keybindings", [])
-                name     = getattr(layer, "name", "unknown")
-                priority = getattr(layer, "priority", 50)
+                data:     ConfigDict    = layer.build()
+                bindings: List[Keybind] = data.get("keybindings", [])
+                name:     str           = getattr(layer, "name", "unknown")
+                priority: int           = getattr(layer, "priority", 50)
 
                 for key, command, mode in bindings:
                     catalog.add(KeybindingEntry(
@@ -80,7 +82,6 @@ class KeybindingCatalog:
                 logger.warning("[KeybindingCatalog] layer %r failed: %s", layer, exc)
 
         return catalog
-
     # ─── Query ─────────────────────────────────────────────────────────────
 
     def lookup(self, key: str, mode: str = "normal") -> Optional[KeybindingEntry]:

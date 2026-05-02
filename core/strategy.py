@@ -30,11 +30,11 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any, Dict, Generic, List, Optional, Tuple, TypeVar, cast
 
+from core.types import ConfigDict
+
 logger = logging.getLogger("qute.strategy")
 
 T = TypeVar("T")
-ConfigDict = Dict[str, Any]
-
 
 # ─────────────────────────────────────────────
 # Strategy Abstraction

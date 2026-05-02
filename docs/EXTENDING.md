@@ -20,9 +20,8 @@ Priority: 45 (between behavior[40] and performance[50])
 """
 from __future__ import annotations
 from typing import Any, Dict, List, Tuple
-from core.layer import BaseConfigLayer
+from core.layer import BaseConfigLayer, ConfigDict
 
-ConfigDict = Dict[str, Any]
 
 class WorkspaceLayer(BaseConfigLayer):
     name        = "workspace"

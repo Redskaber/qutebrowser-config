@@ -79,12 +79,12 @@ Strict-mode: all params typed; injected collections are defensively copied.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple, FrozenSet
+from typing import List, Optional, FrozenSet
 
+from core.types import ConfigDict
 from core.layer import BaseConfigLayer
+from keybindings.catalog import Keybind
 
-ConfigDict  = Dict[str, Any]
-BindingList = List[Tuple[str, str, str]]
 
 logger = logging.getLogger("qute.layers.user")
 
@@ -175,7 +175,7 @@ class UserLayer(BaseConfigLayer):
         tabs_position:        Optional[str]         = None,
         statusbar_show:       Optional[str]         = None,
         extra_settings:       Optional[ConfigDict]  = None,
-        extra_bindings:       Optional[BindingList] = None,
+        extra_bindings:       Optional[List[Keybind]] = None,
         extra_aliases:        Optional[ConfigDict]  = None,
         github_username:      str                   = "redskaber",
     ) -> None:
@@ -360,7 +360,7 @@ class UserLayer(BaseConfigLayer):
 
         return settings
 
-    def _keybindings(self) -> BindingList:
+    def _keybindings(self) -> List[Keybind]:
         return list(self._extra_bindings)
 
     def _aliases(self) -> ConfigDict:

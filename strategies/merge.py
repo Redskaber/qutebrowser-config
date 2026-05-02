@@ -23,7 +23,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, cast
 
-from core.strategy import ConfigDict, Strategy, StrategyRegistry, recursive_merge
+from core.types import ConfigDict
+from core.strategy import Strategy, StrategyRegistry, recursive_merge
 
 logger = logging.getLogger("qute.strategies.merge")
 

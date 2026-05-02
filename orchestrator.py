@@ -67,6 +67,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Set
 
+from core.types import ConfigDict
 from core.layer import LayerStack
 from core.lifecycle import LifecycleHook, LifecycleManager
 from core.pipeline import ConfigPacket
@@ -77,7 +78,7 @@ from core.protocol import (
     GetLayerNamesQuery,
     GetMergedConfigQuery,
     GetSnapshotQuery,
-    HealthReportReadyEvent,
+    # HealthReportReadyEvent,
     LayerAppliedEvent,
     MessageRouter,
     Query,
@@ -86,10 +87,9 @@ from core.state import ConfigEvent, ConfigState, ConfigStateMachine
 from core.strategy import PolicyAction, PolicyChain
 from core.health import HealthChecker, HealthReport
 from core.incremental import ConfigChange, ConfigSnapshot, IncrementalApplier, SnapshotStore
+from keybindings.catalog import Keybind
 
 logger = logging.getLogger("qute.orchestrator")
-
-ConfigDict = Dict[str, Any]
 
 
 # ─────────────────────────────────────────────
@@ -173,7 +173,7 @@ class ConfigApplier:
 
     def apply_keybindings(
         self,
-        bindings:    List[tuple],  # type: ignore[type-arg]
+        bindings: List[Keybind],
         clear_first: bool = True,
     ) -> List[str]:
         """
@@ -190,9 +190,6 @@ class ConfigApplier:
         for binding in bindings:
             if len(binding) == 3:
                 key, command, mode = binding
-            elif len(binding) == 2:
-                key, command = binding
-                mode = "normal"
             else:
                 errors.append(f"invalid binding tuple: {binding}")
                 continue
@@ -369,7 +366,7 @@ class ConfigOrchestrator:
         return [
             rec.layer.name
             for rec in sorted(
-                self._stack._layers,
+                self._stack._layers,  # type: ignore
                 key=lambda r: r.layer.priority,
             )
             if rec.enabled
@@ -461,7 +458,7 @@ class ConfigOrchestrator:
 
             # 1. Settings — policy chain evaluated per-key if populated
             settings     = merged.get("settings", {})
-            policy_chain = self._policy if bool(self._policy._policies) else None
+            policy_chain = self._policy if bool(self._policy._policies) else None  # type: ignore
             all_errors.extend(
                 applier.apply_settings(settings, policy_chain, self._router)
             )
@@ -657,18 +654,15 @@ class ConfigOrchestrator:
         if not changes:
             logger.info("[Orchestrator] reload: no settings changed — nothing to apply")
         else:
-            # Incremental apply: only changed/added keys
-            changed_and_added = [
-                c for c in changes if c.kind.name in ("CHANGED", "ADDED")
-            ]
-            inc_errors = self._incremental_applier.apply_delta(
-                changes,
-                apply_fn=lambda k, v: _applier.apply_settings(
+            def apply_fn(k: str, v: Any) -> List[str]:
+                return _applier.apply_settings(
                     {k: v},
-                    self._policy if bool(self._policy._policies) else None,
-                    self._router,
-                ),
-            )
+                    self._policy if bool(self._policy._policies) else None, # type: ignore
+                    self._router,   # type: ignore
+                )
+            # Incremental apply: only changed/added keys
+            changed_and_added = [c for c in changes if c.kind.name in ("CHANGED", "ADDED")]
+            inc_errors = self._incremental_applier.apply_delta(changes, apply_fn)
             errors.extend(inc_errors)
             logger.info(
                 "[Orchestrator] incremental reload: %d change(s), %d error(s)",
@@ -742,7 +736,7 @@ class ConfigOrchestrator:
             )
         # v9: timing metrics
         if self._last_metrics:
-            parts = []
+            parts: List[str] = []
             for phase in ("build", "apply", "host_policies", "reload"):
                 key = f"{phase}_ms"
                 if key in self._last_metrics:
