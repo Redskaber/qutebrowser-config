@@ -386,7 +386,7 @@ class TestAppearanceLayer(unittest.TestCase):
         self.assertIn("fonts.statusbar", settings)
 
     def test_font_default_family_present(self):
-        """v9: fonts.default_family must be set so UserLayer can override it."""
+        """fonts.default_family must be set so UserLayer can override it."""
         from layers.appearance import AppearanceLayer
         layer = AppearanceLayer()
         settings = layer.build()["settings"]
@@ -395,7 +395,7 @@ class TestAppearanceLayer(unittest.TestCase):
         self.assertTrue(len(settings["fonts.default_family"]) > 0)
 
     def test_fonts_web_size_default_is_int(self):
-        """v9: fonts.web.size.default must be an int (pixels), not a string."""
+        """fonts.web.size.default must be an int (pixels), not a string."""
         from layers.appearance import AppearanceLayer
         layer = AppearanceLayer()
         settings = layer.build()["settings"]
@@ -403,7 +403,7 @@ class TestAppearanceLayer(unittest.TestCase):
         self.assertIsInstance(settings["fonts.web.size.default"], int)
 
     def test_parse_px_helper(self):
-        """v9: _parse_px converts CSS-like size strings to int."""
+        """parse_px converts CSS-like size strings to int."""
         from layers.appearance import parse_px
         self.assertEqual(parse_px("16px"), 16)
         self.assertEqual(parse_px("18"), 18)

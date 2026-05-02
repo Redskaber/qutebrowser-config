@@ -165,7 +165,7 @@ To see all bindings in the running browser: `:bind`
 | `,Cm`  | media    | YouTube, Bilibili, Twitch; autoplay ON        | context |
 | `,Cd`  | dev      | GitHub, MDN, crates, npm, DevDocs             | context |
 | `,Cwt` | writing  | Dict, Thesaurus, Grammarly, focus mode        | context |
-| `,Cg`  | gaming   | Steam, Twitch, ProtonDB, fullscreen ON *(v8)* | context |
+| `,Cg`  | gaming   | Steam, Twitch, ProtonDB, fullscreen ON _(v8)_ | context |
 | `,C0`  | default  | Reset to base settings                        | context |
 | `,Ci`  | —        | Show current context in message bar           | context |
 

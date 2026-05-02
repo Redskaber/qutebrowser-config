@@ -125,8 +125,8 @@ class BehaviorLayer(BaseConfigLayer):
             "hints.radius":                3,
 
             # ── Content security ──────────────────────────────────────────
-            "content.local_content_can_access_file_urls":   False,   # v9
-            "content.local_content_can_access_remote_urls": False,   # v9
+            "content.local_content_can_access_file_urls":   False,
+            "content.local_content_can_access_remote_urls": False,
             "content.geolocation":                          False,
             "content.notifications.enabled":                False,
 

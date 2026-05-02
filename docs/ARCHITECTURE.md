@@ -551,7 +551,58 @@ tests/
 
 ## Changelog
 
-### v9 (current)
+### v10 (current)
+
+**File/Package Layout — Breaking change (structure only)**
+
+The project now uses the intended sub-package layout that all imports always
+assumed. Files that were flat in the project root are now in the correct
+sub-directory:
+
+| Module(s)                                                                                                          | Package        |
+| ------------------------------------------------------------------------------------------------------------------ | -------------- |
+| `layer.py`, `lifecycle.py`, `pipeline.py`, `protocol.py`, `state.py`, `strategy.py`, `health.py`, `incremental.py` | `core/`        |
+| `appearance.py`, `base.py`, `behavior.py`, `privacy.py`, `performance.py`, `context.py`, `user.py`                 | `layers/`      |
+| `merge.py`, `profile.py`, `search.py`, `download.py`                                                               | `strategies/`  |
+| `content.py`, `network.py`, `security.py`, `host.py`                                                               | `policies/`    |
+| `extended.py`                                                                                                      | `themes/`      |
+| `catalog.py`                                                                                                       | `keybindings/` |
+
+Every sub-directory has an `__init__.py`. `config.py` and `orchestrator.py`
+remain at the project root (qutebrowser's `config.py` entry-point requirement).
+
+**core/layer.py**
+
+- `LayerStack._layers` property added as a public alias for `_records`.
+  This was needed by `orchestrator._handle_get_layer_names` which
+  referenced `self._stack._layers` (non-existent attribute — was `_records`).
+  The property returns the _same_ list object, O(1), no overhead.
+
+**orchestrator.py**
+
+- `_handle_get_layer_names`: fixed variable-shadowing bug. The old
+  comprehension iterated `for layer in sorted(...)` but filtered `if rec.enabled`
+  — `rec` came from an undefined outer scope. Fixed to `rec.layer.name` / `rec.enabled`
+  from the same loop variable.
+
+**core/**init**.py**
+
+- Was empty (0 bytes). Now exports the full public API surface with `__all__`.
+- Newly exported: `FilterStage`, `LayerRecord`.
+
+**tests/**
+
+- `tests/conftest.py` added — inserts project root onto `sys.path` so pytest
+  discovers tests correctly when run from any working directory or via IDEs.
+- `tests/test_v10.py` added — 38 new tests covering all v10 changes:
+  package imports, `_layers` property, `GetLayerNamesQuery` end-to-end,
+  `FilterStage` coverage, and `core.__all__` surface completeness.
+
+**Total test count: 259 (was 221)**
+
+---
+
+### v9 (previous)
 
 **protocol.py**
 

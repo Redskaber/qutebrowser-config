@@ -186,7 +186,7 @@ LAYERS: dict[str, bool] = {
     "privacy":     True,
     "appearance":  True,
     "behavior":    True,
-    "context":     True,   # situational context layer (priority=45)
+    "context":     True,
     "performance": True,
     "user":        True,
 }
@@ -410,7 +410,7 @@ def _build_orchestrator() -> ConfigOrchestrator:
     # ── Lifecycle hooks ───────────────────────────────────────────────
     @lifecycle.decorator(LifecycleHook.POST_APPLY, priority=100)
     def _log_apply_done() -> None:
-        logger.info("✓ qutebrowser config applied successfully (v9)")
+        logger.info("✓ qutebrowser config applied successfully")
 
     @lifecycle.decorator(LifecycleHook.ON_ERROR, priority=10)
     def _log_error() -> None:
@@ -418,7 +418,7 @@ def _build_orchestrator() -> ConfigOrchestrator:
 
     @lifecycle.decorator(LifecycleHook.POST_RELOAD, priority=100)
     def _log_reload_done() -> None:
-        logger.info("↺ qutebrowser config hot-reloaded (v9)")
+        logger.info("↺ qutebrowser config hot-reloaded")
 
     _ = _log_apply_done, _log_error, _log_reload_done  # suppress reportUnusedFunction
 

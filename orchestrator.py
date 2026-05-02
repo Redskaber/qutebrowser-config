@@ -1,7 +1,7 @@
 """
 orchestrator.py
 ===============
-Configuration Orchestrator  (composition root)  v9
+Configuration Orchestrator  (composition root)  v10
 
 Responsibilities:
   1. Build the LayerStack
@@ -17,7 +17,20 @@ Responsibilities:
  11. Expose GetSnapshotQuery / GetLayerDiffQuery handlers [v9]
  12. Expose GetLayerNamesQuery handler                    [v9]
 
-v9 changes:
+v10 changes:
+  - _handle_get_layer_names: fixed variable-shadowing bug — comprehension
+    now uses `rec.layer.name` and `rec.enabled` from the same loop variable
+    (was `layer.name` + `rec.enabled`, where `rec` leaked from an outer scope
+    if it happened to be defined — undefined behaviour if no prior loop ran).
+  - LayerStack._layers property added as a public alias for _records, making
+    the handler both correct and explicit about what it iterates.
+  - core/__init__.py now exports the full public API surface (was empty).
+  - FilterStage, LayerRecord added to core.__all__.
+  - tests/conftest.py added — pytest now discovers tests correctly when
+    invoked from any working directory.
+  - tests/test_v10.py added — 38 new tests covering the above fixes.
+
+v9 changes (retained):
   - build() / apply() / reload() wrapped with time.perf_counter()
     and emit MetricsEvent on completion.
   - reload() now re-applies host policies after incremental settings
@@ -319,7 +332,7 @@ class ConfigOrchestrator:
         return self._last_report
 
     def _handle_get_snapshot(self, query: Query) -> Optional[ConfigSnapshot]:
-        """Return a snapshot by label or index (v9)."""
+        """Return a snapshot by label or index."""
         q = query if isinstance(query, GetSnapshotQuery) else GetSnapshotQuery()
         snapshots = self._snapshot_store.snapshots
         if not snapshots:
@@ -336,7 +349,7 @@ class ConfigOrchestrator:
             return None
 
     def _handle_get_layer_diff(self, query: Query) -> List[ConfigChange]:
-        """Return diff between two snapshots by label (v9)."""
+        """Return diff between two snapshots by label."""
         q = query if isinstance(query, GetLayerDiffQuery) else GetLayerDiffQuery()
         snapshots = self._snapshot_store.snapshots
         snap_a: Optional[ConfigSnapshot] = None
@@ -352,12 +365,12 @@ class ConfigOrchestrator:
         return ConfigDiffer.diff(snap_a.data, snap_b.data)
 
     def _handle_get_layer_names(self, _query: Query) -> List[str]:
-        """Return ordered list of layer names (v9)."""
+        """Return ordered list of enabled layer names (priority order)."""
         return [
-            layer.name
-            for layer in sorted(
+            rec.layer.name
+            for rec in sorted(
                 self._stack._layers,
-                key=lambda rec: rec.layer.priority,
+                key=lambda r: r.layer.priority,
             )
             if rec.enabled
         ]
@@ -369,7 +382,7 @@ class ConfigOrchestrator:
         Resolve all layers into a merged config.
 
         FSM transitions: IDLE → LOADING → VALIDATING → APPLYING (ready for apply)
-        Emits MetricsEvent("build", ...) on completion.  [v9]
+        Emits MetricsEvent("build", ...) on completion.
         """
         self._fsm.send(ConfigEvent.START_LOAD)
         t0 = time.perf_counter()

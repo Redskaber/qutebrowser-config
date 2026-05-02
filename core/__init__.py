@@ -1,23 +1,26 @@
 """
 core/__init__.py
 ================
-Public API surface for the ``core`` architecture package.  v9
+Public API surface for the ``core`` architecture package.  v10
 
 Import from here for stable, versioned access to core types.
 Internal implementation details live in the individual modules.
 
-v9 additions:
+v10 additions:
+  - LayerStack._layers property (public alias for _records; fixes
+    orchestrator._handle_get_layer_names variable-shadowing bug)
+  - conftest.py for clean pytest discovery from any working directory
+  - core/__init__.py now properly exports all public symbols (was empty)
+  - FilterStage added to exports (was missing despite being implemented)
+  - LayerRecord added to exports (needed by orchestrator type signatures)
+
+v9 additions (retained):
   - Protocol: ConfigReloadedEvent, SnapshotTakenEvent, LayerConflictEvent,
               PolicyDeniedEvent, MetricsEvent
   - Protocol queries: GetSnapshotQuery, GetLayerDiffQuery, GetLayerNamesQuery
-  - Incremental: ConfigDiffer (now a proper public class)
+  - Incremental: ConfigDiffer promoted to public class
   - Health: SearchEngineCountCheck, ProxySchemeDetailCheck, DownloadPromptCheck
             HealthChecker.with_checks()
-
-v5–v8 additions retained:
-  - ContextSwitchedEvent, HealthReportReadyEvent
-  - GetMergedConfigQuery, GetHealthReportQuery
-  - ChangeKind, ConfigChange, ConfigSnapshot, IncrementalApplier, SnapshotStore
 """
 
 from core.incremental import (
@@ -31,6 +34,7 @@ from core.incremental import (
 from core.layer import (
     BaseConfigLayer,
     LayerProtocol,
+    LayerRecord,
     LayerStack,
 )
 from core.lifecycle import (
@@ -39,6 +43,7 @@ from core.lifecycle import (
 )
 from core.pipeline import (
     ConfigPacket,
+    FilterStage,
     LogStage,
     MergeStage,
     Pipeline,
@@ -47,36 +52,29 @@ from core.pipeline import (
     ValidateStage,
 )
 from core.protocol import (
-    # buses / router
     CommandBus,
     EventBus,
     MessageRouter,
     QueryBus,
-    # base message types
     Event,
     Command,
     Query,
-    # events (v5–v8)
     LayerAppliedEvent,
     ConfigErrorEvent,
     ThemeChangedEvent,
     BindingRegisteredEvent,
     ContextSwitchedEvent,
     HealthReportReadyEvent,
-    # events (v9)
     ConfigReloadedEvent,
     SnapshotTakenEvent,
     LayerConflictEvent,
     PolicyDeniedEvent,
     MetricsEvent,
-    # queries (v5–v8)
     GetMergedConfigQuery,
     GetHealthReportQuery,
-    # queries (v9)
     GetSnapshotQuery,
     GetLayerDiffQuery,
     GetLayerNamesQuery,
-    # commands
     ApplyLayerCommand,
     ReloadConfigCommand,
     SetOptionCommand,
@@ -104,7 +102,6 @@ from core.health import (
     HealthIssue,
     HealthReport,
     Severity,
-    # individual checks (useful for test injection via HealthChecker.with_checks)
     BlockingEnabledCheck,
     BlockingListCheck,
     SearchEngineDefaultCheck,
@@ -120,45 +117,31 @@ from core.health import (
     FontFamilyCheck,
     SpellcheckLangCheck,
     ContentHeaderCheck,
-    # v9
     SearchEngineCountCheck,
     ProxySchemeDetailCheck,
     DownloadPromptCheck,
 )
 
 __all__ = [
-    # ── incremental ──────────────────────────────────────────────────
     "ChangeKind", "ConfigChange", "ConfigDiffer",
     "ConfigSnapshot", "IncrementalApplier", "SnapshotStore",
-    # ── layer ────────────────────────────────────────────────────────
-    "BaseConfigLayer", "LayerProtocol", "LayerStack",
-    # ── lifecycle ────────────────────────────────────────────────────
+    "BaseConfigLayer", "LayerProtocol", "LayerRecord", "LayerStack",
     "LifecycleHook", "LifecycleManager",
-    # ── pipeline ─────────────────────────────────────────────────────
-    "ConfigPacket", "LogStage", "MergeStage", "Pipeline",
+    "ConfigPacket", "FilterStage", "LogStage", "MergeStage", "Pipeline",
     "PipeStage", "TransformStage", "ValidateStage",
-    # ── protocol — buses / router ────────────────────────────────────
     "CommandBus", "EventBus", "MessageRouter", "QueryBus",
     "Event", "Command", "Query",
-    # ── protocol — events (v5–v8) ────────────────────────────────────
     "LayerAppliedEvent", "ConfigErrorEvent", "ThemeChangedEvent",
     "BindingRegisteredEvent", "ContextSwitchedEvent", "HealthReportReadyEvent",
-    # ── protocol — events (v9) ───────────────────────────────────────
     "ConfigReloadedEvent", "SnapshotTakenEvent", "LayerConflictEvent",
     "PolicyDeniedEvent", "MetricsEvent",
-    # ── protocol — queries (v5–v8) ───────────────────────────────────
     "GetMergedConfigQuery", "GetHealthReportQuery",
-    # ── protocol — queries (v9) ──────────────────────────────────────
     "GetSnapshotQuery", "GetLayerDiffQuery", "GetLayerNamesQuery",
-    # ── protocol — commands ──────────────────────────────────────────
     "ApplyLayerCommand", "ReloadConfigCommand", "SetOptionCommand",
-    # ── state ────────────────────────────────────────────────────────
     "ConfigEvent", "ConfigState", "ConfigStateMachine",
-    # ── strategy ─────────────────────────────────────────────────────
     "Policy", "PolicyAction", "PolicyChain", "PolicyDecision",
     "Strategy", "StrategyRegistry",
     "ReadOnlyPolicy", "TypeEnforcePolicy", "RangePolicy", "AllowlistPolicy",
-    # ── health ───────────────────────────────────────────────────────
     "HealthCheck", "HealthChecker", "HealthIssue", "HealthReport", "Severity",
     "BlockingEnabledCheck", "BlockingListCheck", "SearchEngineDefaultCheck",
     "SearchEngineUrlCheck", "WebRTCPolicyCheck", "CookieAcceptCheck",

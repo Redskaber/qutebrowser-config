@@ -14,6 +14,16 @@ Principles:
   - Incremental/Delta: layers emit only their changes (deltas)
 
 Pattern: Composite + Strategy + Template Method
+
+v10 changes:
+  - LayerStack._layers property added as a public alias for _records.
+    Rationale: orchestrator._handle_get_layer_names (GetLayerNamesQuery
+    handler) needed to iterate LayerRecord objects sorted by priority.
+    Previously it accessed the private _layers attribute which did not
+    exist — the attribute was _records — causing an AttributeError at
+    runtime when the QueryBus handler was invoked.
+    The property returns the same list object as _records (no copy) so
+    it is O(1) and carries no overhead.
 """
 
 from __future__ import annotations
@@ -190,6 +200,15 @@ class LayerStack:
     def layers(self) -> Iterator[LayerProtocol]:
         for r in self._records:
             yield r.layer
+
+    @property
+    def _layers(self) -> List[LayerRecord]:
+        """
+        Expose internal records list as ``_layers`` for orchestrator
+        introspection (QueryBus handler) and backward-compat access.
+        Sorted by priority (same order as ``_records``).
+        """
+        return self._records
 
     def get(self, name: str) -> Optional[LayerProtocol]:
         for r in self._records:

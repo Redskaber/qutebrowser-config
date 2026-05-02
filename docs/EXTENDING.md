@@ -294,10 +294,10 @@ These are wired via `UserLayer` at priority 90 and override whatever `Appearance
 
 **Why separate `font_size` and `font_size_web`?**
 
-| Variable | qutebrowser key | Unit | Controls |
-|---|---|---|---|
-| `USER_FONT_SIZE` | `fonts.default_size` | Qt string (`"10pt"`) | UI chrome (tabs, statusbar, completion) |
-| `USER_FONT_SIZE_WEB` | `fonts.web.size.default` | integer (pixels) | Default size for web page body text |
+| Variable             | qutebrowser key          | Unit                 | Controls                                |
+| -------------------- | ------------------------ | -------------------- | --------------------------------------- |
+| `USER_FONT_SIZE`     | `fonts.default_size`     | Qt string (`"10pt"`) | UI chrome (tabs, statusbar, completion) |
+| `USER_FONT_SIZE_WEB` | `fonts.web.size.default` | integer (pixels)     | Default size for web page body text     |
 
 They are independent — you can have a compact `"9pt"` UI font while keeping web pages at `18` pixels for readability.
 
