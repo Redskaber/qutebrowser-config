@@ -28,6 +28,8 @@ For live development:
 ```
 config.py  ← qutebrowser loads ONLY this file
     │
+    ├── QutebrowserApplier         concrete bridge → qutebrowser config/c API  ← v12.1
+    │
     └── ConfigOrchestrator          (composition root)
           ├── LayerStack             priority-ordered merge pipeline
           │     ├── BaseLayer        [p=10]  foundational defaults
@@ -278,6 +280,7 @@ python3 scripts/diagnostics.py health
 
 | Version | Highlights                                                                                                                                                                             |
 | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v12.1   | **BugFix**: `QutebrowserApplier(ConfigApplier)` concrete class added to `config.py` — fixes `TypeError: ConfigApplier() takes no arguments` crash on startup                           |
 | v12     | `core/metrics.py` (MetricsCollector/PhaseTimer), pipeline TeeStage/RetryStage/CompositeStage, orchestrator audit_trail()/metrics_summary(), SRP: telemetry extracted from orchestrator |
 | v11     | SessionLayer (p=55), AuditLog, pipeline ReduceStage/BranchStage/CacheStage/AuditStage, diagnostics.py CLI, config.py ACTIVE_SESSION                                                    |
 | v10     | `core/types.py` (zero-dep primitives), `LayerStack._layers` fix, `core/__init__.py` full exports, conftest.py                                                                          |

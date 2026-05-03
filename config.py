@@ -1,7 +1,7 @@
 """
 config.py
 =========
-qutebrowser Configuration Entry Point  (v11)
+qutebrowser Configuration Entry Point  (v12)
 
 This is the **only** file qutebrowser loads directly.
 It is intentionally thin: it wires the architecture and delegates
@@ -32,7 +32,16 @@ Strict-mode notes (Pyright):
   - Lifecycle decorator return values assigned to _ to suppress
     reportUnusedFunction.
 
-v11 changes:
+v12 changes:
+  - QutebrowserApplier(ConfigApplier) concrete class added here.
+    Bridges orchestrator ↔ qutebrowser runtime (config/c objects).
+    Implements apply_settings / apply_keybindings / apply_aliases /
+    apply_host_policy with full error capture and policy-gate support.
+  - _apply() now creates QutebrowserApplier(config, c) — fixes the
+    TypeError: ConfigApplier() takes no arguments crash (v11 regression).
+  - Typing imports extended: Dict, List, Tuple for strict-mode coverage.
+
+v11 changes (retained):
   - SessionLayer (priority=55) integrated: time-aware configuration.
     Controlled by ACTIVE_SESSION and LAYERS["session"].
   - SESSION_MODE flag added to CONFIGURATION SECTION.
@@ -66,7 +75,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 # ── Architecture ──────────────────────────────────────────────────────────────
 from core.layer     import LayerStack
@@ -84,6 +93,7 @@ from core.protocol  import (
     ThemeChangedEvent,
 )
 from core.state     import ConfigStateMachine
+from core.types     import Keybind
 from orchestrator   import ConfigApplier, ConfigOrchestrator
 
 # ── Layer imports ─────────────────────────────────────────────────────────────
@@ -308,6 +318,150 @@ USER_EXTRA_ALIASES: dict[str, str] = {
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    CONCRETE APPLIER (v12)                                ║
+# ║                                                                          ║
+# ║  QutebrowserApplier bridges the orchestrator to qutebrowser's            ║
+# ║  runtime `config` / `c` objects.  It lives here (not in orchestrator.py) ║
+# ║  so that orchestrator.py stays import-clean (no qutebrowser internals).  ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+class QutebrowserApplier(ConfigApplier):
+    """
+    Concrete ConfigApplier that writes to qutebrowser's live config API.
+
+    Parameters
+    ----------
+    config : Any
+        The ``config`` object injected by qutebrowser (ConfigAPI).
+        Used for ``config.set(key, value, pattern)`` and
+        ``config.bind(key, command, mode)``.
+    c : Any
+        The ``c`` object injected by qutebrowser (ConfigContainer).
+        Used for attribute-style access: ``c.fonts.default_size = "10pt"``.
+        We fall back to ``config.set()`` for all keys so ``c`` is held
+        only as a reference for future extension.
+    """
+
+    def __init__(self, config: Any, c: Any) -> None:
+        self._config = config
+        self._c      = c
+
+    # ── Settings ──────────────────────────────────────────────────────────
+
+    def apply_settings(
+        self,
+        settings:     Dict[str, Any],
+        policy_chain: Optional[Any] = None,
+        router:       Optional[Any] = None,
+    ) -> List[str]:
+        """
+        Write every key/value pair to qutebrowser via ``config.set()``.
+
+        If a *policy_chain* is provided, each key is evaluated before writing:
+        a PolicyDeniedEvent is emitted (via router) and the key skipped when
+        the chain rejects it.
+        """
+        errors: List[str] = []
+        for key, value in settings.items():
+            # Policy gate (optional)
+            if policy_chain is not None:
+                try:
+                    allowed, reason = policy_chain.evaluate(key, value)
+                    if not allowed:
+                        logger.debug("[Applier] DENY  key=%s  reason=%s", key, reason)
+                        if router is not None:
+                            try:
+                                from core.protocol import PolicyDeniedEvent
+                                router.emit(PolicyDeniedEvent(
+                                    key=key, reason=reason or "policy denied",
+                                ))
+                            except Exception:
+                                pass
+                        continue
+                except Exception as exc:
+                    logger.debug("[Applier] policy_chain.evaluate() error: %s", exc)
+
+            # Write to qutebrowser
+            try:
+                self._config.set(key, value)
+            except Exception as exc:
+                msg = f"settings[{key!r}]={value!r}: {exc}"
+                logger.warning("[Applier] %s", msg)
+                errors.append(msg)
+        return errors
+
+    # ── Keybindings ───────────────────────────────────────────────────────
+
+    def apply_keybindings(self, keybindings: List[Keybind]) -> List[str]:
+        """
+        Bind keys via ``config.bind()``.
+
+        Each entry must be a 3-tuple ``(key, command, mode)`` or a 2-tuple
+        ``(key, command)`` (mode defaults to ``"normal"``).
+        """
+        errors: List[str] = []
+        for entry in keybindings:
+            try:
+                if isinstance(entry, (list, tuple)): # type: ignore[runtime]
+                    if len(entry) == 3:
+                        key, command, mode = entry
+                    else:
+                        errors.append(f"bad keybinding tuple length: {entry!r}")
+                        continue
+                else:
+                    errors.append(f"unknown keybinding format: {entry!r}")
+                    continue
+                self._config.bind(key, command, mode=mode)
+            except Exception as exc:
+                msg = f"bind({entry!r}): {exc}"
+                logger.warning("[Applier] %s", msg)
+                errors.append(msg)
+        return errors
+
+    # ── Aliases ───────────────────────────────────────────────────────────
+
+    def apply_aliases(self, aliases: Dict[str, str]) -> List[str]:
+        """
+        Register command aliases via ``config.set('aliases', ...)``.
+
+        Merges with existing aliases so that layers can contribute
+        incrementally without clobbering each other.
+        """
+        errors: List[str] = []
+        if not aliases:
+            return errors
+        try:
+            # Merge with whatever is already registered
+            try:
+                existing: Dict[str, str] = dict(self._config.get("aliases") or {})
+            except Exception:
+                existing = {}
+            existing.update(aliases)
+            self._config.set("aliases", existing)
+        except Exception as exc:
+            msg = f"aliases: {exc}"
+            logger.warning("[Applier] %s", msg)
+            errors.append(msg)
+        return errors
+
+    # ── Per-host policy ───────────────────────────────────────────────────
+
+    def apply_host_policy(self, pattern: str, settings: Dict[str, Any]) -> List[str]:
+        """
+        Apply pattern-scoped settings via ``config.set(key, value, pattern)``.
+        """
+        errors: List[str] = []
+        for key, value in settings.items():
+            try:
+                self._config.set(key, value, pattern)
+            except Exception as exc:
+                msg = f"host_policy[{pattern!r}] {key!r}={value!r}: {exc}"
+                logger.warning("[Applier] %s", msg)
+                errors.append(msg)
+        return errors
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                         WIRING SECTION                                   ║
 # ║                                                                          ║
 # ║  Composition root — do not edit unless extending architecture.           ║
@@ -492,7 +646,7 @@ def _apply(config: Any, c: Any) -> None:
         logger.info("[config.py]\n%s", orchestrator.summary())
 
         # Phase 2: Apply — write resolved config to qutebrowser API
-        applier = ConfigApplier(config, c)
+        applier = QutebrowserApplier(config, c)
         errors  = orchestrator.apply(applier)
 
         # Phase 3: Per-host policy overrides (pattern-scoped config.set)

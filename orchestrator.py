@@ -18,7 +18,7 @@ Responsibilities:
  12.  Expose GetLayerNamesQuery handler                         [v9]
  13.  Structured audit trail via core.audit (AuditLog)          [v11]
  14.  SessionLayer event emission after build()                 [v11]
- 15.  MetricsCollector (core.metrics) replaces _last_metrics     [v12]
+ 15.  MetricsCollector (core.metrics) replaces _last_metrics    [v12]
  16.  audit_trail() / metrics_summary() introspection methods   [v12]
  17.  GetMetricsSummaryQuery handler                            [v12]
 
@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import logging
 import time
+from abc    import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Set
 
 from core.types     import ConfigDict
@@ -102,7 +103,7 @@ logger = logging.getLogger("qute.orchestrator")
 # ConfigApplier (forward-declared interface)
 # ─────────────────────────────────────────────
 
-class ConfigApplier:
+class ConfigApplier(ABC):
     """
     Abstract interface between the orchestrator and qutebrowser's config API.
 
@@ -110,6 +111,7 @@ class ConfigApplier:
     The orchestrator never imports qutebrowser internals directly.
     """
 
+    @abstractmethod
     def apply_settings(
         self,
         settings:     ConfigDict,
@@ -117,19 +119,22 @@ class ConfigApplier:
         router:       Optional[Any] = None,
     ) -> List[str]:
         """Apply a settings dict; return error strings."""
-        return []
+        ...
 
+    @abstractmethod
     def apply_keybindings(self, keybindings: List[Any]) -> List[str]:
         """Apply keybinding tuples; return error strings."""
-        return []
+        ...
 
+    @abstractmethod
     def apply_aliases(self, aliases: Dict[str, str]) -> List[str]:
         """Apply command aliases; return error strings."""
-        return []
+        ...
 
+    @abstractmethod
     def apply_host_policy(self, pattern: str, settings: ConfigDict) -> List[str]:
         """Apply a per-host settings dict; return error strings."""
-        return []
+        ...
 
 
 # ─────────────────────────────────────────────
