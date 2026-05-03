@@ -1,7 +1,7 @@
 """
 layers/behavior.py
 ==================
-Behavior Layer — UX, Workflow, Interaction Patterns  (v10)
+Behavior Layer — UX, Workflow, Interaction Patterns  (v11)
 
 Priority: 40
 
@@ -14,7 +14,15 @@ Responsibilities:
 
 Pattern: Data-Driven Configuration + Command pattern for keybindings
 
-v10 changes (bug-fix):
+v11 changes (zoom keybindings):
+  - Added standard browser zoom keys: `-` (zoom-out), `+` (zoom-in), `=` (reset).
+      Alongside existing vim-style `zi`/`zo`, this covers muscle-memory from
+      Chrome/Firefox users.  All keys operate on the zoom.levels index declared
+      in BaseLayer (v11), so steps are now predictable and symmetric.
+  - Documented zoom keybinding block with reference to BaseLayer zoom.levels
+      contract to keep the design intent traceable.
+
+v10 changes (bug-fix, retained):
   - Removed ``input.partial_timeout: 500`` override.
     This was overriding BaseLayer's 3000 ms value and was the proximate
     cause of the keyhint dialog flash-and-disappear bug: the sequence
@@ -168,8 +176,18 @@ class BehaviorLayer(BaseConfigLayer):
             ("G",           "scroll-to-perc",               "normal"),
 
             # ── Zoom ─────────────────────────────────────────────────────
+            # zoom-in / zoom-out step through zoom.levels by index (set in
+            # BaseLayer).  The list is declared there to keep the contract
+            # in one place; keybindings here only reference the commands.
+            #
+            # Standard browser keys (+/-/=) are added alongside vim-style
+            # zi/zo so muscle-memory from other browsers works too.
+            # `zoom 100` resets to the default level unconditionally.
             ("zi",          "zoom-in",                      "normal"),
+            ("-",           "zoom-out",                     "normal"),
             ("zo",          "zoom-out",                     "normal"),
+            ("+",           "zoom-in",                      "normal"),
+            ("=",           "zoom 100",                     "normal"),
             ("z0",          "zoom 100",                     "normal"),
             ("zz",          "zoom 100",                     "normal"),
 

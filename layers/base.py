@@ -1,7 +1,7 @@
 """
 layers/base.py
 ==============
-Base Layer — Foundational Defaults  (v10)
+Base Layer — Foundational Defaults  (v11)
 
 Priority: 10 (lowest, applied first, overridable by all other layers)
 
@@ -11,7 +11,22 @@ before any other layers are applied.
 
 Philosophy: explicit > implicit. Every setting here is intentional.
 
-v10 changes (bug-fixes):
+v11 changes (bug-fix):
+  - zoom.levels: now explicitly declared as a symmetric, evenly-stepped list.
+      Root-cause fix for the zoom wrap-around / skip bug.
+      Symptom: 100% → zoom-out → 90% → zoom-out → 75% → zoom-in → 110%
+               (skipped 90 and 100 on the way back up; then ceiling-locked at 110).
+      Cause: without an explicit zoom.levels, qutebrowser uses its built-in
+             default list which has uneven gaps.  After a direction reversal the
+             internal index is recomputed from the *current zoom value* against
+             the list.  If the value sits at a list boundary (or the default
+             zoom.default is not in the list), the index wraps or misaligns,
+             causing the observed skip.
+      Fix: declare a clean 15-entry list with uniform 10 pp steps in the
+           working range (75–300) and finer steps below 75 for precision work.
+           zoom.default (100%) is guaranteed to be present at index 7.
+
+v10 changes (bug-fixes, retained):
   - input.partial_timeout: 500 → 3000 ms
       Root-cause fix for the keyhint dialog flash-and-disappear bug.
       When the leader key (`,`) or any multi-key prefix was pressed,
@@ -202,6 +217,35 @@ class BaseLayer(BaseConfigLayer):
             "fonts.web.size.minimum":  6,
 
             # ── Zoom ─────────────────────────────────────────────────
+            # zoom.levels MUST be an explicitly ordered list.
+            #
+            # Without this, qutebrowser falls back to its built-in default:
+            #   [25, 33, 50, 67, 75, 90, 100, 110, 125, 150, ...]
+            # which has uneven gaps (e.g. 90→110 skips 100 on wrap-around).
+            #
+            # Bug manifestation observed in logs:
+            #   100% → zoom-out → 90% → zoom-out → 75%
+            #   75%  → zoom-in  → 110%   ← WRONG: skipped 90% and 100%
+            #   110% → zoom-in  → 110%   ← WRONG: ceiling hit, no further increase
+            #
+            # Root cause: zoom-in/zoom-out step through zoom.levels by index.
+            # When zoom.default is not in the list OR the list is the qutebrowser
+            # built-in with wrap-around semantics, the current index is lost
+            # after a direction reversal and restarts from a wrong position.
+            #
+            # Fix: declare a symmetric, evenly-stepped list where every level
+            # is reachable from every other level without skipping.  Steps of
+            # 10 pp are comfortable; finer 5 pp steps at the extremes are
+            # retained for precise low-zoom work.
+            #
+            # zoom.default (100) is guaranteed to be in this list.
+            "zoom.levels": [
+                25, 33, 50,
+                67, 75, 80,
+                90, 100, 110,
+                125, 150, 175,
+                200, 250, 300,
+            ],
             "zoom.default":       "100%",
             "zoom.mouse_divider": 512,
 
