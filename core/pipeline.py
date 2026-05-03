@@ -1,7 +1,7 @@
 """
 core/pipeline.py
 ================
-Pipeline Engine
+Pipeline Engine  (v11)
 
 Architecture::
 
@@ -19,14 +19,40 @@ Principles:
 
 Pattern: Chain of Responsibility + Decorator
 
-v7 changes:
+v12 changes:
+  - TeeStage: fan-out — run a side-effect stage without mutating the
+    packet.  The side-branch receives the packet; the original packet
+    continues unchanged.  Useful for audit, metrics, or logging probes
+    inserted mid-pipeline without affecting data flow.
+  - RetryStage: wrap any stage and retry on exception up to ``max_retries``
+    times with optional exponential back-off delay.  Records failures as
+    warnings in the packet.  Idempotent stages only.
+  - CompositeStage: compose a named sub-pipeline as a single stage.
+    Equivalent to inlining the sub-pipeline's stages but with a single
+    ``name`` visible in describe() / logging.
+  - Pipeline.__iter__: iterate over stages (replaces the stages() method
+    which is retained for backwards compatibility).
+
+v11 changes (retained):
+  - ReduceStage: fold (key, value) pairs using a reducer function.
+    Useful for aggregating statistics or computing derived keys.
+  - BranchStage: conditional routing — runs one of two sub-pipelines
+    depending on a predicate applied to the packet.
+  - CacheStage: memoize expensive TransformStage output when the input
+    data dict hash is unchanged.  Bypasses the wrapped stage on cache hit.
+  - AuditStage: records pipeline entry/exit into the global AuditLog.
+    Zero overhead when audit log is at DEBUG level.
+  - Pipeline.fork() — create an independent copy of the pipeline.
+  - Pipeline.describe() — return a human-readable stage summary string.
+  - ConfigPacket.with_errors() — bulk-add multiple error strings.
+  - ConfigPacket.with_warnings() — bulk-add multiple warning strings.
+  - PipeStage.__add__() — compose two stages into a mini 2-stage pipeline
+    (syntactic sugar: stage_a + stage_b).
+
+v7 changes (retained):
   - ConfigPacket field default_factory values corrected:
-      field(default_factory=ConfigDict)   → field(default_factory=dict)
-      field(default_factory=dict[str,Any])→ field(default_factory=dict)
-      field(default_factory=list[str])    → field(default_factory=list)
-    These were Pyright strict-mode errors: ``dict[str, Any]`` and
-    ``list[str]`` are generic aliases used for type hints, not callable
-    factories.  The correct factories are plain ``dict`` and ``list``.
+      field(default_factory=dict)  (was dict[str,Any] — Pyright strict error)
+      field(default_factory=list)  (was list[str]     — Pyright strict error)
 
 Strict-mode notes (Pyright):
   - Removed unused ``Generic`` and ``Optional`` imports.
@@ -34,15 +60,20 @@ Strict-mode notes (Pyright):
     to avoid ``dict[Unknown, Unknown]`` inference.
   - ``TransformStage`` / ``ValidateStage`` use fully-typed ``Callable``
     parameters.
+  - ReduceStage uses explicit ``Callable[[T, str, Any], T]`` signature.
+  - BranchStage uses ``Callable[[ConfigPacket], bool]`` predicate.
 """
 
 from __future__ import annotations
 
 import functools
+import hashlib
+import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterator, List, TypeVar, cast
+from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar, cast
 
 from core.types import ConfigDict
 
@@ -50,9 +81,11 @@ logger = logging.getLogger("qute.pipeline")
 
 T = TypeVar("T")
 
+
 # ─────────────────────────────────────────────
 # Domain Types
 # ─────────────────────────────────────────────
+
 @dataclass
 class ConfigPacket:
     """
@@ -101,6 +134,18 @@ class ConfigPacket:
             warnings=self.warnings.copy(),
         )
 
+    def with_errors(self, msgs: List[str]) -> "ConfigPacket":
+        """Bulk-add multiple error strings (v11)."""
+        if not msgs:
+            return self
+        return ConfigPacket(
+            source=self.source,
+            data=self.data.copy(),
+            meta=self.meta.copy(),
+            errors=self.errors + msgs,
+            warnings=self.warnings.copy(),
+        )
+
     def with_warning(self, msg: str) -> "ConfigPacket":
         return ConfigPacket(
             source=self.source,
@@ -108,6 +153,18 @@ class ConfigPacket:
             meta=self.meta.copy(),
             errors=self.errors.copy(),
             warnings=self.warnings + [msg],
+        )
+
+    def with_warnings(self, msgs: List[str]) -> "ConfigPacket":
+        """Bulk-add multiple warning strings (v11)."""
+        if not msgs:
+            return self
+        return ConfigPacket(
+            source=self.source,
+            data=self.data.copy(),
+            meta=self.meta.copy(),
+            errors=self.errors.copy(),
+            warnings=self.warnings + msgs,
         )
 
     def with_meta(self, key: str, value: Any) -> "ConfigPacket":
@@ -136,6 +193,7 @@ class ConfigPacket:
 # ─────────────────────────────────────────────
 # Pipeline Stage Abstraction
 # ─────────────────────────────────────────────
+
 class PipeStage(ABC):
     """
     Abstract pipeline stage.
@@ -150,6 +208,15 @@ class PipeStage(ABC):
     @abstractmethod
     def process(self, packet: ConfigPacket) -> ConfigPacket: ...
 
+    def __add__(self, other: "PipeStage") -> "Pipeline":
+        """
+        Compose two stages into a 2-stage pipeline (v11 syntactic sugar).
+
+        Example::
+            combined = ValidateStage({...}) + LogStage("post")
+        """
+        return Pipeline(f"{self.name}+{other.name}").pipe(self).pipe(other)
+
     def __repr__(self) -> str:
         return f"<Stage:{self.name}>"
 
@@ -157,6 +224,7 @@ class PipeStage(ABC):
 # ─────────────────────────────────────────────
 # Pipeline
 # ─────────────────────────────────────────────
+
 class Pipeline:
     """
     Ordered chain of PipeStages.
@@ -206,6 +274,22 @@ class Pipeline:
                 raise
         return current
 
+    def fork(self) -> "Pipeline":
+        """
+        Return an independent shallow copy of this pipeline (v11).
+        Modifications to the fork do not affect the original.
+        """
+        clone = Pipeline(self._name)
+        clone._stages = list(self._stages)
+        return clone
+
+    def describe(self) -> str:
+        """Human-readable stage summary (v11)."""
+        if not self._stages:
+            return f"Pipeline({self._name!r}) [empty]"
+        stage_names = " → ".join(s.name for s in self._stages)
+        return f"Pipeline({self._name!r}) [{stage_names}]"
+
     def stages(self) -> Iterator[PipeStage]:
         yield from self._stages
 
@@ -217,7 +301,7 @@ class Pipeline:
 
 
 # ─────────────────────────────────────────────
-# Built-in Stages
+# Built-in Stages — original set
 # ─────────────────────────────────────────────
 
 class LogStage(PipeStage):
@@ -372,6 +456,381 @@ class MergeStage(PipeStage):
 
 
 # ─────────────────────────────────────────────
+# Built-in Stages — v11 additions
+# ─────────────────────────────────────────────
+
+class ReduceStage(PipeStage):
+    """
+    Fold all (key, value) pairs in the data dict through a reducer.
+
+    The reducer accumulates an arbitrary result (not a new packet).
+    The *packet is returned unchanged*; the accumulated result is stored
+    in ``packet.meta`` under ``result_key``.
+
+    This is useful for:
+      - Counting keys matching a predicate
+      - Computing a checksum / hash of the config
+      - Building a derived summary dict
+
+    Args:
+        reducer:    (accumulator: T, key: str, value: Any) → T
+        initial:    Initial accumulator value.
+        result_key: Key under which to store the result in packet.meta.
+        label:      Descriptive stage name.
+
+    Example — count boolean keys::
+
+        ReduceStage(
+            reducer    = lambda acc, k, v: acc + (1 if isinstance(v, bool) else 0),
+            initial    = 0,
+            result_key = "bool_count",
+            label      = "bool-counter",
+        )
+    """
+
+    def __init__(
+        self,
+        reducer:    Callable[[Any, str, Any], Any],
+        initial:    Any,
+        result_key: str = "reduce_result",
+        label:      str = "reduce",
+    ) -> None:
+        self._reducer    = reducer
+        self._initial    = initial
+        self._result_key = result_key
+        self._label      = label
+
+    @property
+    def name(self) -> str:
+        return f"reduce:{self._label}"
+
+    def process(self, packet: ConfigPacket) -> ConfigPacket:
+        acc = self._initial
+        for k, v in packet.data.items():
+            try:
+                acc = self._reducer(acc, k, v)
+            except Exception as exc:
+                logger.warning("[ReduceStage:%s] reducer raised on key=%r: %s", self._label, k, exc)
+        return packet.with_meta(self._result_key, acc)
+
+
+class BranchStage(PipeStage):
+    """
+    Conditional routing: apply one of two sub-pipelines based on a predicate.
+
+    The *true_branch* pipeline runs when predicate(packet) is True;
+    the *false_branch* (optional) runs otherwise.  If false_branch is
+    None, the packet passes through unchanged on the false path.
+
+    This enables e.g. applying stricter validation only when a privacy
+    flag is set, without cluttering the main pipeline with if/else.
+
+    Args:
+        predicate:    (packet: ConfigPacket) → bool
+        true_branch:  Pipeline to run when predicate returns True.
+        false_branch: Pipeline to run when predicate returns False (optional).
+        label:        Descriptive stage name.
+
+    Example — apply hardening only in PARANOID mode::
+
+        BranchStage(
+            predicate    = lambda p: p.meta.get("privacy_profile") == "PARANOID",
+            true_branch  = Pipeline("harden").pipe(hardenStage),
+            false_branch = None,
+            label        = "paranoid-branch",
+        )
+    """
+
+    def __init__(
+        self,
+        predicate:    Callable[["ConfigPacket"], bool],
+        true_branch:  "Pipeline",
+        false_branch: Optional["Pipeline"] = None,
+        label:        str                  = "branch",
+    ) -> None:
+        self._predicate    = predicate
+        self._true_branch  = true_branch
+        self._false_branch = false_branch
+        self._label        = label
+
+    @property
+    def name(self) -> str:
+        return f"branch:{self._label}"
+
+    def process(self, packet: ConfigPacket) -> ConfigPacket:
+        try:
+            condition = self._predicate(packet)
+        except Exception as exc:
+            logger.warning("[BranchStage:%s] predicate raised: %s — taking false path", self._label, exc)
+            condition = False
+
+        if condition:
+            logger.debug("[BranchStage:%s] → true_branch", self._label)
+            return self._true_branch.run(packet)
+        elif self._false_branch is not None:
+            logger.debug("[BranchStage:%s] → false_branch", self._label)
+            return self._false_branch.run(packet)
+        else:
+            logger.debug("[BranchStage:%s] → pass-through (no false_branch)", self._label)
+            return packet
+
+
+class CacheStage(PipeStage):
+    """
+    Memoize an expensive sub-stage.
+
+    Computes a stable hash of the packet's data dict; on a cache hit the
+    wrapped stage is skipped entirely and the cached output is returned.
+    On a cache miss the wrapped stage runs normally and the result is cached.
+
+    Cache key: SHA-1 of the JSON-serialised sorted data dict.
+    Non-serialisable values fall back to repr() per key.
+
+    This is useful when a TransformStage performs expensive computation
+    (e.g. calling an external tool, parsing a large file) that would
+    otherwise re-run on every :config-source hot-reload even when the
+    input data has not changed.
+
+    Args:
+        inner: The PipeStage to memoize.
+        label: Descriptive stage name.
+
+    Example::
+
+        CacheStage(TransformStage(expensive_fn, "expensive"), label="expensive-cache")
+    """
+
+    def __init__(self, inner: PipeStage, label: str = "cache") -> None:
+        self._inner:  PipeStage              = inner
+        self._label:  str                    = label
+        self._cache:  Dict[str, ConfigPacket] = {}
+
+    @property
+    def name(self) -> str:
+        return f"cache:{self._label}"
+
+    def invalidate(self) -> None:
+        """Clear the cache manually (e.g. after a config reload)."""
+        self._cache.clear()
+        logger.debug("[CacheStage:%s] cache invalidated", self._label)
+
+    def process(self, packet: ConfigPacket) -> ConfigPacket:
+        key = self._hash(packet.data)
+        if key in self._cache:
+            logger.debug("[CacheStage:%s] cache hit — skipping %s", self._label, self._inner.name)
+            return self._cache[key]
+        result = self._inner.process(packet)
+        self._cache[key] = result
+        logger.debug("[CacheStage:%s] cache miss — stored result for key %.8s…", self._label, key)
+        return result
+
+    @staticmethod
+    def _hash(data: ConfigDict) -> str:
+        """Stable hash of the data dict."""
+        parts: List[str] = []
+        for k in sorted(data.keys()):
+            try:
+                v_str = json.dumps(data[k], sort_keys=True, default=repr)
+            except (TypeError, ValueError):
+                v_str = repr(data[k])
+            parts.append(f"{k}={v_str}")
+        raw = "|".join(parts).encode()
+        return hashlib.sha1(raw).hexdigest()
+
+
+class AuditStage(PipeStage):
+    """
+    Record pipeline passage into the global AuditLog (v11).
+
+    Emits one AuditLevel.DEBUG entry on entry and one on exit (with key count
+    and error count).  Zero-cost when the audit log is not being consumed.
+
+    Args:
+        label:     Stage label written into the audit entry component field.
+        component: AuditLog component name (default "pipeline").
+
+    Example::
+
+        Pipeline("privacy")
+        .pipe(AuditStage("pre"))
+        .pipe(ValidateStage({...}))
+        .pipe(AuditStage("post"))
+    """
+
+    def __init__(self, label: str = "", component: str = "pipeline") -> None:
+        self._label     = label
+        self._component = component
+
+    @property
+    def name(self) -> str:
+        return f"audit:{self._label}"
+
+    def process(self, packet: ConfigPacket) -> ConfigPacket:
+        try:
+            from core.audit import audit_debug
+            audit_debug(
+                self._component,
+                f"pipeline stage {self._label!r}: source={packet.source!r} "
+                f"keys={len(packet.data)} errors={len(packet.errors)}",
+                label=self._label,
+                source=packet.source,
+            )
+        except ImportError:
+            pass   # audit module not available — silently skip
+        return packet
+
+
+class TeeStage(PipeStage):
+    """
+    Fan-out: run a side-branch stage *without* mutating the main packet.  (v12)
+
+    The *observer* stage receives the packet, runs, but its output is discarded.
+    The original packet continues through the pipeline unchanged.
+
+    This makes it safe to inject logging, auditing, or metrics probes anywhere
+    in a pipeline without risking accidental data mutation.
+
+    If the observer raises, the exception is caught, logged as a warning, and
+    the main packet is returned unchanged.
+
+    Args:
+        observer: A PipeStage whose output is ignored.
+        label:    Descriptive name used in logging and describe().
+
+    Example — audit every packet mid-pipeline::
+
+        Pipeline("privacy")
+        .pipe(ValidateStage({...}))
+        .pipe(TeeStage(AuditStage("mid"), label="mid-audit"))
+        .pipe(TransformStage(harden_fn, "harden"))
+    """
+
+    def __init__(self, observer: PipeStage, label: str = "tee") -> None:
+        self._observer = observer
+        self._label    = label
+
+    @property
+    def name(self) -> str:
+        return f"tee:{self._label}[{self._observer.name}]"
+
+    def process(self, packet: ConfigPacket) -> ConfigPacket:
+        try:
+            self._observer.process(packet)   # output intentionally discarded
+        except Exception as exc:
+            logger.warning(
+                "[TeeStage:%s] observer %s raised: %s — main packet unaffected",
+                self._label, self._observer.name, exc,
+            )
+        return packet   # always return original unchanged
+
+
+class RetryStage(PipeStage):
+    """
+    Retry wrapper — run an inner stage up to *max_retries* times on exception.  (v12)
+
+    On each failure:
+      - The exception is logged as a warning.
+      - A warning string is appended to the packet.
+      - An optional *delay_s* (default 0.0) pause is applied before the next
+        attempt (useful for transient resource-access errors).
+      - If all retries are exhausted, the last exception is re-raised.
+
+    Only use with **idempotent** stages — stages that produce the same result
+    when called repeatedly with the same input.
+
+    Args:
+        inner:       The PipeStage to retry.
+        max_retries: Total attempts (including first try).  Minimum 1.
+        delay_s:     Seconds to sleep between attempts.  Set 0.0 (default)
+                     for synchronous configs where sleep is never desired.
+        label:       Descriptive stage name.
+
+    Example::
+
+        RetryStage(TransformStage(flaky_rpc, "rpc"), max_retries=3, delay_s=0.05)
+    """
+
+    def __init__(
+        self,
+        inner:       PipeStage,
+        max_retries: int   = 3,
+        delay_s:     float = 0.0,
+        label:       str   = "retry",
+    ) -> None:
+        self._inner       = inner
+        self._max_retries = max(1, max_retries)
+        self._delay_s     = delay_s
+        self._label       = label
+
+    @property
+    def name(self) -> str:
+        return f"retry:{self._label}[{self._inner.name}×{self._max_retries}]"
+
+    def process(self, packet: ConfigPacket) -> ConfigPacket:
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                return self._inner.process(packet)
+            except Exception as exc:
+                last_exc = exc
+                msg = (
+                    f"[RetryStage:{self._label}] attempt {attempt}/{self._max_retries} "
+                    f"for stage {self._inner.name} raised: {exc}"
+                )
+                logger.warning(msg)
+                packet = packet.with_warnings([msg])
+                if self._delay_s > 0.0 and attempt < self._max_retries:
+                    time.sleep(self._delay_s)
+
+        # All retries exhausted — re-raise last exception
+        if last_exc is not None:
+            raise last_exc
+        return packet   # unreachable; satisfies type checker
+
+
+class CompositeStage(PipeStage):
+    """
+    Wrap a sub-Pipeline as a single named PipeStage.  (v12)
+
+    Allows a reusable pipeline fragment to be embedded inside a larger
+    pipeline while appearing as a single unit in describe() / logging.
+
+    Equivalent to inlining all stages of *sub_pipeline* but with a single
+    visible name, making ``Pipeline.describe()`` output much cleaner when
+    complex sub-pipelines are involved.
+
+    Args:
+        sub_pipeline: The Pipeline to delegate to.
+        label:        Override name (defaults to sub_pipeline.name).
+
+    Example::
+
+        privacy_stages = (
+            Pipeline("privacy-inner")
+            .pipe(ValidateStage({...}))
+            .pipe(FilterStage(allow_only_safe))
+        )
+
+        main_pipeline = (
+            Pipeline("main")
+            .pipe(CompositeStage(privacy_stages, label="privacy"))
+            .pipe(LogStage("post-privacy"))
+        )
+    """
+
+    def __init__(self, sub_pipeline: "Pipeline", label: str = "") -> None:
+        self._sub   = sub_pipeline
+        self._label = label or sub_pipeline.name
+
+    @property
+    def name(self) -> str:
+        return f"composite:{self._label}"
+
+    def process(self, packet: ConfigPacket) -> ConfigPacket:
+        return self._sub.run(packet)
+
+
+# ─────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────
 
@@ -396,3 +855,27 @@ def _deep_merge(
         else:
             result[k] = v
     return result
+
+
+__all__ = [
+    "ConfigPacket",
+    "PipeStage",
+    "Pipeline",
+    # original stages
+    "LogStage",
+    "ValidateStage",
+    "TransformStage",
+    "FilterStage",
+    "MergeStage",
+    # v11 stages
+    "ReduceStage",
+    "BranchStage",
+    "CacheStage",
+    "AuditStage",
+    # v12 stages
+    "TeeStage",
+    "RetryStage",
+    "CompositeStage",
+    # helpers
+    "noop_pipeline",
+]

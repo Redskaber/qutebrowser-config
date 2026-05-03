@@ -34,10 +34,9 @@ from __future__ import annotations
 from enum import Enum, auto
 from typing import List
 
-from core.types import ConfigDict
+from core.types import ConfigDict, Keybind
 from core.layer import BaseConfigLayer
 from core.pipeline import LogStage, Pipeline, ValidateStage
-from keybindings.catalog import Keybind  # ConfigPacket
 
 
 class PrivacyProfile(Enum):

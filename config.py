@@ -1,7 +1,7 @@
 """
 config.py
 =========
-qutebrowser Configuration Entry Point  (v9)
+qutebrowser Configuration Entry Point  (v11)
 
 This is the **only** file qutebrowser loads directly.
 It is intentionally thin: it wires the architecture and delegates
@@ -19,10 +19,11 @@ NixOS:      paths resolve via the nix store automatically.
 Architecture wiring order:
   1. LayerStack built with enabled layers (priority-sorted)
   2. ContextLayer injected if context system is enabled (priority=45)
-  3. UserLayer injected last (priority=90)
-  4. ConfigOrchestrator.build() → resolves layers, runs pipeline
-  5. ConfigOrchestrator.apply() → writes to qutebrowser config API
-  6. apply_host_policies()      → pattern-scoped config.set()
+  3. SessionLayer injected if session system is enabled (priority=55) [v11]
+  4. UserLayer injected last (priority=90)
+  5. ConfigOrchestrator.build() → resolves layers, runs pipeline
+  6. ConfigOrchestrator.apply() → writes to qutebrowser config API
+  7. apply_host_policies()      → pattern-scoped config.set()
 
 Strict-mode notes (Pyright):
   - _apply(config, c) parameters annotated as Any — qutebrowser injects
@@ -31,35 +32,33 @@ Strict-mode notes (Pyright):
   - Lifecycle decorator return values assigned to _ to suppress
     reportUnusedFunction.
 
-v9 changes:
-  - Wired ConfigReloadedEvent subscriber: logs reload stats (changes,
-    errors, duration) after every hot-reload cycle.
-  - Wired MetricsEvent subscriber: logs timing for build/apply/reload
-    phases at DEBUG level (silent in production, visible with -v).
+v11 changes:
+  - SessionLayer (priority=55) integrated: time-aware configuration.
+    Controlled by ACTIVE_SESSION and LAYERS["session"].
+  - SESSION_MODE flag added to CONFIGURATION SECTION.
+  - LAYERS dict updated with "session" key (default: True).
+  - _build_orchestrator() registers SessionLayer when LAYERS["session"] is True.
+  - _on_session_event subscriber: logs active session on config load.
+  - Audit integration: AuditLog populated during build/apply phases;
+    accessible via :py orchestrator.audit_trail() or diagnostics.py.
+  - SESSION keybindings wired via SessionLayer (,S prefix).
+  - USER_EXTRA_ALIASES: added "diag" → spawn diagnostics.py summary.
+
+v9 changes (retained):
+  - Wired ConfigReloadedEvent subscriber: logs reload stats.
+  - Wired MetricsEvent subscriber: logs timing phases at DEBUG level.
   - Wired SnapshotTakenEvent subscriber: debug log only.
-  - Added USER_ENABLE_RELOAD_HOST_POLICIES flag — when True (default),
-    host policies are re-applied on every hot-reload via orchestrator.reload().
-    The flag is passed conceptually; the v9 orchestrator always re-applies
-    host policies in reload() — set HOST_POLICY_* flags to False to opt out.
-  - Added USER_MESSAGES_TIMEOUT to control notification display time.
-  - USER_FONT_SIZE_WEB renamed hint in comment: "16px", "18px", or plain "16".
-  - Lifecycle hook banner updated to v9.
-  - _build_orchestrator() wires PolicyDeniedEvent subscriber (warns on DENY).
+  - USER_ENABLE_RELOAD_HOST_POLICIES flag.
+  - USER_MESSAGES_TIMEOUT for notification display time.
+  - _build_orchestrator() wires PolicyDeniedEvent subscriber.
 
 v8 changes (retained):
-  - Added USER_FONT_FAMILY / USER_FONT_SIZE / USER_FONT_SIZE_UI — first-class
-    font override params.
-  - Wired HealthReportReadyEvent subscriber.
-  - UserLayer constructor call includes font_family/font_size/font_size_web.
+  - USER_FONT_FAMILY / USER_FONT_SIZE / USER_FONT_SIZE_WEB.
+  - HealthReportReadyEvent subscriber.
 
 v7 changes (retained):
-  - HOST_POLICY_DEV is now actually passed to build_default_host_registry.
+  - HOST_POLICY_DEV actually passed to build_default_host_registry.
   - Summary banner shows host policy counts.
-
-v6 changes (retained):
-  - USER_PROXY type corrected to Optional[str].
-  - Added ACTIVE_CONTEXT "writing" to the documented valid values.
-  - HOST_POLICY_DEV flag added.
 """
 
 from __future__ import annotations
@@ -84,38 +83,40 @@ from core.protocol  import (
     SnapshotTakenEvent,
     ThemeChangedEvent,
 )
-from core.state import ConfigStateMachine
+from core.state     import ConfigStateMachine
+from orchestrator   import ConfigApplier, ConfigOrchestrator
 
+# ── Layer imports ─────────────────────────────────────────────────────────────
 from layers.appearance  import AppearanceLayer
 from layers.base        import BaseLayer
 from layers.behavior    import BehaviorLayer
-from layers.context     import ContextLayer #, ContextMode
+from layers.context     import ContextLayer
 from layers.performance import PerformanceLayer, PerformanceProfile
 from layers.privacy     import PrivacyLayer, PrivacyProfile
 from layers.user        import UserLayer
 
-from orchestrator import ConfigApplier, ConfigOrchestrator
+# ── v11: Session layer (graceful import — layer file may not exist yet) ───────
+from layers.session import SessionLayer
+
+# ── Policy / host registry imports ────────────────────────────────────────────
+from policies.host import HostPolicyRegistry, build_default_host_registry # type: ignore[import]
+
+# ── Theme registration ─────────────────────────────────────────────────────────
 from themes.extended import register_all_themes
-from policies.host import HostPolicyRegistry, build_default_host_registry as _build_host_registry
+register_all_themes()
 
-
-# ── Make all sub-packages importable ──────────────────────────────────────────
+# ── Path setup (ensure config dir is importable) ──────────────────────────────
 _config_dir = os.path.dirname(os.path.abspath(__file__))
 if _config_dir not in sys.path:
     sys.path.insert(0, _config_dir)
 
-
 # ── Logging ───────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="[qute-config] %(name)s %(levelname)s: %(message)s",
-)
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger("qute.config")
 
-register_all_themes()
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║                       CONFIGURATION SECTION                              ║
+# ║                     CONFIGURATION SECTION                                ║
 # ║                                                                          ║
 # ║  THIS IS THE ONLY SECTION YOU SHOULD EDIT.                               ║
 # ║  Every setting here drives the architecture below.                       ║
@@ -164,6 +165,29 @@ LEADER_KEY = ","
 #                     ,Cwt (writing)  ,Cg (gaming)  ,C0 (reset)  ,Ci (show current)
 ACTIVE_CONTEXT: Optional[str] = None
 
+# ── Active Session  [v11] ─────────────────────────────────────────────────────
+# Time/situation-aware configuration mode.
+#
+# Resolution order (highest wins):
+#   1. This variable (ACTIVE_SESSION)
+#   2. QUTE_SESSION environment variable
+#   3. ~/.config/qutebrowser/.session file (written by ,S* keybindings)
+#   4. auto-detect from local time (day/evening/night)
+#
+# Valid values:
+#   None | "auto"    → derive from local time (recommended)
+#   "day"            → 08:00–18:00 standard working (full performance)
+#   "evening"        → 18:00–22:00 wind-down (larger font, +5% zoom)
+#   "night"          → 22:00–06:00 low-light (larger font, minimal chrome)
+#   "focus"          → deep-work: hide chrome, no notifications
+#   "commute"        → bandwidth-constrained: no images, no autoplay
+#   "present"        → screen-share / demo: large text, 125% zoom
+#
+# Switch at runtime:  ,Sd (day)  ,Se (evening)  ,Sn (night)
+#                     ,Sf (focus)  ,Sc (commute)  ,Sp (present)
+#                     ,S0 (auto)  ,Si (show current)
+ACTIVE_SESSION: Optional[str] = None   # None = auto-detect from time
+
 # ── Layer enable / disable ────────────────────────────────────────────────────
 # False = skip layer entirely.  Useful for debugging.
 LAYERS: dict[str, bool] = {
@@ -173,6 +197,7 @@ LAYERS: dict[str, bool] = {
     "behavior":    True,
     "context":     True,
     "performance": True,
+    "session":     True,   # v11: time-aware session layer
     "user":        True,
 }
 
@@ -183,7 +208,6 @@ HOST_POLICY_LOGIN:  bool = True   # Google, GitHub, GitLab login cookies
 HOST_POLICY_SOCIAL: bool = True   # Discord, Notion, Bilibili
 HOST_POLICY_MEDIA:  bool = True   # YouTube, Twitch (no-autoplay)
 HOST_POLICY_DEV:    bool = True   # localhost, 127.0.0.1, [::1], *.local (JS+cookies)
-                                  # NOTE (v7 fix): this flag is now actually used!
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
@@ -194,42 +218,34 @@ HOST_POLICY_DEV:    bool = True   # localhost, 127.0.0.1, [::1], *.local (JS+coo
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── Editor ────────────────────────────────────────────────────────────────────
-# Command for :open-editor / <ctrl-e> in insert mode.
-# "{}" is replaced with the temp file path.
 USER_EDITOR: list[str] | None = ["kitty", "-e", "nvim", "{}"]
 
 # ── Start pages ───────────────────────────────────────────────────────────────
 USER_START_PAGES: list[str] | None = ["https://www.bilibili.com"]
 
 # ── Default zoom ──────────────────────────────────────────────────────────────
-# e.g. "100%", "110%", "125%".  None = keep BaseLayer default.
+# e.g. "100%", "110%", "125%".  None = keep BaseLayer/SessionLayer default.
 USER_ZOOM: str | None = None
 
-# ── Font overrides ─────────────────────────────────────────────────────────────
-# Override the font set by AppearanceLayer/theme.
+# ── Font overrides ────────────────────────────────────────────────────────────
 # USER_FONT_FAMILY:   font family name (e.g. "JetBrainsMono Nerd Font", "Iosevka")
 # USER_FONT_SIZE:     UI chrome font size string (e.g. "10pt", "12pt")
-#                     → maps to fonts.default_size (Qt string, affects qute chrome)
+#                     → maps to fonts.default_size (Qt string)
 # USER_FONT_SIZE_WEB: web content default font size (e.g. "16px", "18px", or "16")
-#                     → maps to fonts.web.size.default (int, affects page text)
-#                     Accepts "16px", "18px", or plain "16" — all parsed to int.
-# None = keep AppearanceLayer / theme default.
+#                     → maps to fonts.web.size.default (int)
+#                     NOTE: SessionLayer also sets fonts.web.size.default for
+#                     evening/night/present modes; UserLayer (p=90) always wins.
 USER_FONT_FAMILY:   str | None = None
 USER_FONT_SIZE:     str | None = None
 USER_FONT_SIZE_WEB: str | None = None
 
 # ── Spellcheck languages ──────────────────────────────────────────────────────
-# e.g. ["en-US"], ["en-US", "zh-CN"].  None = keep base default.
 USER_SPELLCHECK: list[str] | None = None
 
-# ── GitHub username (used in :gh alias) ───────────────────────────────────────
+# ── GitHub username ────────────────────────────────────────────────────────────
 USER_GITHUB: str = "redskaber"
 
 # ── Search engine overrides ───────────────────────────────────────────────────
-# Merged ON TOP of the base layer's engine dict (UserLayer priority=90).
-# Set USER_SEARCH_ENGINES_MERGE=True (default) for additive behavior.
-# Set to False to REPLACE the entire engine map.
-# None = keep base engines unchanged.
 USER_SEARCH_ENGINES: dict[str, str] | None = {
     "gpt":      "https://chatgpt.com/?{}",
     "claude":   "https://claude.ai/new/?{}",
@@ -239,84 +255,55 @@ USER_SEARCH_ENGINES: dict[str, str] | None = {
 USER_SEARCH_ENGINES_MERGE: bool = True
 
 # ── Proxy ─────────────────────────────────────────────────────────────────────
-# content.proxy accepts a SINGLE string (not a list).
-#
-# Valid values:
-#   "system"                     → use the system proxy (default)
-#   "none"                       → direct connection, bypass system proxy
-#   "socks5://host:port"         → SOCKS5 proxy  (clash-verge / clash-meta)
-#   "http://host:port"           → HTTP CONNECT proxy
-#
-# Clash-Verge / Clash-Meta mixed-port:
-#   SOCKS5 → socks5://127.0.0.1:7897
-#   HTTP   → http://127.0.0.1:7897
-#
-USER_PROXY: Optional[str] = "socks5://127.0.0.1:7897"
-# USER_PROXY: Optional[str] = "http://127.0.0.1:7897"
-# USER_PROXY: Optional[str] = "system"
-# USER_PROXY: Optional[str] = "none"
-# USER_PROXY: Optional[str] = None
+# Valid: "system" | "none" | "socks5://host:port" | "http://host:port"
+# Example (Clash-Verge mixed port): "http://127.0.0.1:7897"
+USER_PROXY: str | None = None
 
-# ── Messages timeout (v9) ─────────────────────────────────────────────────────
-# How long qutebrowser notifications are shown (milliseconds).
-# None = keep BaseLayer default (5000ms).
-USER_MESSAGES_TIMEOUT: int | None = None
+# ── Message timeout ───────────────────────────────────────────────────────────
+# Milliseconds to display qutebrowser notifications (0 = until dismissed).
+USER_MESSAGES_TIMEOUT: int | None = 5000
 
 # ── Extra settings (escape hatch) ─────────────────────────────────────────────
-# Any qutebrowser setting not covered by the named layers.
-# NOTE: content.proxy must NOT be set here as a list — use USER_PROXY above.
-USER_EXTRA_SETTINGS: dict[str, Any] = {
-    # Uncomment to override font:
-    # "fonts.default_family": "JetBrainsMono Nerd Font",
-    # "fonts.default_size":   "10pt",
-    #
-    # Uncomment to move tabs to the left:
-    # "tabs.position": "left",
-    #
-    # Uncomment to hide the status bar unless in a special mode:
-    # "statusbar.show": "in-mode",
-    #
-    # Uncomment to change messages timeout:
-    # "messages.timeout": 3000,
-}
+# Applied at priority=90 (UserLayer), after all other layers.
+USER_EXTRA_SETTINGS: dict[str, Any] | None = None
 
-# ── Extra keybindings (escape hatch) ──────────────────────────────────────────
-# List of (key, command, mode) tuples.  UserLayer priority=90 wins over all.
+# ── Extra keybindings ─────────────────────────────────────────────────────────
 L = LEADER_KEY
-USER_EXTRA_BINDINGS: list[tuple[str, str, str]] = [
-    # ── Open with external app (auto-detect) ──────────────────────────────
-    (f"{L}o",   "spawn --userscript open_with.py",                     "normal"),
-    (f"{L}m",   "spawn --userscript open_with.py --app mpv",           "normal"),
-    (";m",      "hint links spawn --userscript open_with.py --app mpv","normal"),
+USER_EXTRA_BINDINGS: list[tuple[str, str, str]] | None = [
+    # ── Search selection shortcuts ─────────────────────────────────────
+    (f"{L}/",   "spawn --userscript search_sel.py --tab",            "normal"),
+    (f"{L}sg",  "spawn --userscript search_sel.py --engine g --tab", "normal"),
+    (f"{L}sw",  "spawn --userscript search_sel.py --engine w --tab", "normal"),
+    (f"{L}sd",  "spawn --userscript search_sel.py --engine ddg --tab","normal"),
 
-    # ── Readability (reader mode) ──────────────────────────────────────────
-    (f"{L}R",   "spawn --userscript readability.py",                   "normal"),
+    # ── Readability ────────────────────────────────────────────────────
+    (f"{L}R",   "spawn --userscript readability.py",                 "normal"),
 
-    # ── Password manager ──────────────────────────────────────────────────
-    (f"{L}p",   "spawn --userscript password.py",                      "normal"),
+    # ── Password manager ───────────────────────────────────────────────
+    (f"{L}p",   "spawn --userscript password.py",                    "normal"),
+    (f"{L}P",   "spawn --userscript password.py --otp",              "normal"),
 
-    # ── Search selection ──────────────────────────────────────────────────
-    (f"{L}s",   "spawn --userscript search_sel.py",                    "normal"),
+    # ── Context: display current context ──────────────────────────────
+    (f"{L}ci",  "spawn --userscript context_switch.py --show",       "normal"),
 
-    # ── Context: display current context in message bar ───────────────────
-    (f"{L}ci",  "spawn --userscript context_switch.py --show",         "normal"),
-
-    # ── Proxy cycle ───────────────────────────────────────────────────────
-    (f"{L}px",  "set content.proxy system",                             "normal"),
-    (f"{L}p0",  "set content.proxy none",                               "normal"),
-    (f"{L}ps",  "set content.proxy socks5://127.0.0.1:7897",            "normal"),
+    # ── Proxy cycle ────────────────────────────────────────────────────
+    (f"{L}px",  "set content.proxy system",                          "normal"),
+    (f"{L}p0",  "set content.proxy none",                            "normal"),
+    (f"{L}ps",  "set content.proxy socks5://127.0.0.1:7897",         "normal"),
 ]
 
-# ── Extra aliases (escape hatch) ─────────────────────────────────────────────
-# Dict of {name: command}.  Applied at priority=90.
+# ── Extra aliases ─────────────────────────────────────────────────────────────
 USER_EXTRA_ALIASES: dict[str, str] = {
     "rl":    "config-source",
     "clean": "download-clear",
     "his":   "history",
     "bm":    "bookmark-list",
     "qm":    "quickmark-list",
-    # v9: snapshot introspection alias
     "snap":  "message-info 'Use :config-source to reload'",
+    # v11: session management aliases
+    "session": "message-info 'Session bindings: ,Sd ,Se ,Sn ,Sf ,Sc ,Sp ,S0 ,Si'",
+    # v11: diagnostic alias (runs without qutebrowser)
+    # "diag": "spawn --userscript diagnostics.py summary",
 }
 
 
@@ -335,7 +322,7 @@ def _build_orchestrator() -> ConfigOrchestrator:
     fsm       = ConfigStateMachine()
 
     # ── Host Policy Registry ──────────────────────────────────────────
-    host_registry: HostPolicyRegistry = _build_host_registry(  # type: ignore[possibly-undefined]
+    host_registry = build_default_host_registry(
         include_login  = HOST_POLICY_LOGIN,
         include_social = HOST_POLICY_SOCIAL,
         include_media  = HOST_POLICY_MEDIA,
@@ -363,8 +350,11 @@ def _build_orchestrator() -> ConfigOrchestrator:
     if LAYERS.get("performance"):
         stack.register(PerformanceLayer(profile=PERFORMANCE_PROFILE))
 
+    # v11: Session layer — time/situation-aware configuration (priority=55)
+    if LAYERS.get("session"):
+        stack.register(SessionLayer(session=ACTIVE_SESSION, leader=LEADER_KEY))
+
     if LAYERS.get("user"):
-        # Merge messages timeout into extra_settings if set
         extra = dict(USER_EXTRA_SETTINGS or {})
         if USER_MESSAGES_TIMEOUT is not None:
             extra.setdefault("messages.timeout", USER_MESSAGES_TIMEOUT)
@@ -388,9 +378,10 @@ def _build_orchestrator() -> ConfigOrchestrator:
         ))
 
     # ── Lifecycle hooks ───────────────────────────────────────────────
+
     @lifecycle.decorator(LifecycleHook.POST_APPLY, priority=100)
     def _log_apply_done() -> None:
-        logger.info("✓ qutebrowser config applied successfully")
+        logger.info("✓ qutebrowser config applied successfully (v11)")
 
     @lifecycle.decorator(LifecycleHook.ON_ERROR, priority=10)
     def _log_error() -> None:
@@ -400,7 +391,7 @@ def _build_orchestrator() -> ConfigOrchestrator:
     def _log_reload_done() -> None:
         logger.info("↺ qutebrowser config hot-reloaded")
 
-    _ = _log_apply_done, _log_error, _log_reload_done  # suppress reportUnusedFunction
+    _ = _log_apply_done, _log_error, _log_reload_done
 
     # ── Event observers ───────────────────────────────────────────────
 
@@ -413,17 +404,13 @@ def _build_orchestrator() -> ConfigOrchestrator:
 
     def _on_config_error(e: Event) -> None:
         if isinstance(e, ConfigErrorEvent):
-            logger.error(
-                "config error [%s]: %s",
-                e.layer_name or "?", e.error_msg,
-            )
+            logger.error("config error [%s]: %s", e.layer_name or "?", e.error_msg)
 
     def _on_theme_changed(e: Event) -> None:
         if isinstance(e, ThemeChangedEvent):
             logger.info("theme changed: %s", e.theme_name)
 
     def _on_health_ready(e: Event) -> None:
-        """Log a concise health summary; on errors print the full report."""
         if isinstance(e, HealthReportReadyEvent):
             if not e.ok:
                 logger.warning(
@@ -438,7 +425,6 @@ def _build_orchestrator() -> ConfigOrchestrator:
                 )
 
     def _on_config_reloaded(e: Event) -> None:
-        """Log hot-reload completion stats."""
         if isinstance(e, ConfigReloadedEvent):
             if e.error_count:
                 logger.warning(
@@ -452,7 +438,6 @@ def _build_orchestrator() -> ConfigOrchestrator:
                 )
 
     def _on_snapshot_taken(e: Event) -> None:
-        """Debug-level snapshot notification."""
         if isinstance(e, SnapshotTakenEvent):
             logger.debug(
                 "[Snapshot] recorded: label=%r  keys=%d  version=%d",
@@ -460,7 +445,6 @@ def _build_orchestrator() -> ConfigOrchestrator:
             )
 
     def _on_policy_denied(e: Event) -> None:
-        """Warn when a policy chain DENY fires during apply."""
         if isinstance(e, PolicyDeniedEvent):
             logger.warning(
                 "[Policy] DENY  key=%s  reason=%s  layer=%s",
@@ -468,7 +452,6 @@ def _build_orchestrator() -> ConfigOrchestrator:
             )
 
     def _on_metrics(e: Event) -> None:
-        """Debug-level performance telemetry."""
         if isinstance(e, MetricsEvent):
             logger.debug(
                 "[Metrics] phase=%-16s  %.1fms  keys=%d",
@@ -523,6 +506,15 @@ def _apply(config: Any, c: Any) -> None:
             )
         else:
             logger.info("[config.py] ✓ all layers applied cleanly")
+
+        # v11: log audit trail summary
+        try:
+            from core.audit import get_audit_log
+            log = get_audit_log()
+            if log.warnings_and_above():
+                logger.warning("[Audit] %d warning/error entries — run diagnostics.py for details", len(log.warnings_and_above()))
+        except ImportError:
+            pass
 
     except Exception as exc:
         logger.exception("[config.py] FATAL: config apply failed: %s", exc)

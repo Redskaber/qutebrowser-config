@@ -47,9 +47,8 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from core.types import ConfigDict
+from core.types import ConfigDict, Keybind
 from core.layer import BaseConfigLayer
-from keybindings.catalog import Keybind
 
 
 class BaseLayer(BaseConfigLayer):

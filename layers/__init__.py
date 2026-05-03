@@ -10,6 +10,7 @@ Layer priority table:
   40  BehaviorLayer    — UX, Vim keybindings, per-host overrides
   45  ContextLayer     — Context, Situational Browser Modes
   50  PerformanceLayer — cache, DNS, rendering
+  55  Session Layer    — Time-Aware and System-Aware Configuration
   90  UserLayer        — personal overrides (highest priority)
 
 Space between 50–90 reserved for user-inserted layers (60–80).
@@ -20,6 +21,7 @@ from layers.appearance  import AppearanceLayer, ColorScheme, THEMES, parse_px
 from layers.behavior    import BehaviorLayer, HostPolicy
 from layers.context     import ContextMode, ContextSpec, ContextLayer
 from layers.performance import PerformanceLayer, PerformanceProfile
+from layers.session     import SessionMode, SessionSpec, SessionLayer, _SESSION_TABLE, _resolve_active_session # type: ignore[import]
 from layers.user        import UserLayer
 
 __all__ = [
@@ -29,5 +31,7 @@ __all__ = [
     "BehaviorLayer", "HostPolicy",
     "ContextMode", "ContextSpec", "ContextLayer",
     "PerformanceLayer", "PerformanceProfile",
+    "SessionMode", "SessionSpec", "SessionLayer",
+    "_SESSION_TABLE", "_resolve_active_session",
     "UserLayer",
 ]

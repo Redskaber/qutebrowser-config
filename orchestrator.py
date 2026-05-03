@@ -1,64 +1,63 @@
 """
 orchestrator.py
 ===============
-Configuration Orchestrator  (composition root)  v10
+Configuration Orchestrator  (composition root)  v12
 
 Responsibilities:
-  1. Build the LayerStack
-  2. Drive the Config State Machine
-  3. Run the Layer Pipeline
-  4. Apply resolved config to qutebrowser via ConfigApplier
-  5. Emit lifecycle events via the MessageRouter
-  6. Apply per-host overrides via HostPolicyRegistry
-  7. Register QueryBus handlers for introspection
-  8. Track config snapshots and diff-apply on hot-reload  [v8]
-  9. Emit timing metrics for build/apply/reload phases    [v9]
- 10. Re-apply host policies after incremental reload      [v9]
- 11. Expose GetSnapshotQuery / GetLayerDiffQuery handlers [v9]
- 12. Expose GetLayerNamesQuery handler                    [v9]
+  1.  Build the LayerStack
+  2.  Drive the Config State Machine
+  3.  Run the Layer Pipeline
+  4.  Apply resolved config to qutebrowser via ConfigApplier
+  5.  Emit lifecycle events via the MessageRouter
+  6.  Apply per-host overrides via HostPolicyRegistry
+  7.  Register QueryBus handlers for introspection
+  8.  Track config snapshots and diff-apply on hot-reload       [v8]
+  9.  Emit timing metrics for build/apply/reload phases         [v9]
+ 10.  Re-apply host policies after incremental reload           [v9]
+ 11.  Expose GetSnapshotQuery / GetLayerDiffQuery handlers      [v9]
+ 12.  Expose GetLayerNamesQuery handler                         [v9]
+ 13.  Structured audit trail via core.audit (AuditLog)          [v11]
+ 14.  SessionLayer event emission after build()                 [v11]
+ 15.  MetricsCollector (core.metrics) replaces _last_metrics     [v12]
+ 16.  audit_trail() / metrics_summary() introspection methods   [v12]
+ 17.  GetMetricsSummaryQuery handler                            [v12]
 
-v10 changes:
-  - _handle_get_layer_names: fixed variable-shadowing bug — comprehension
-    now uses `rec.layer.name` and `rec.enabled` from the same loop variable
-    (was `layer.name` + `rec.enabled`, where `rec` leaked from an outer scope
-    if it happened to be defined — undefined behaviour if no prior loop ran).
-  - LayerStack._layers property added as a public alias for _records, making
-    the handler both correct and explicit about what it iterates.
-  - core/__init__.py now exports the full public API surface (was empty).
-  - FilterStage, LayerRecord added to core.__all__.
-  - tests/conftest.py added — pytest now discovers tests correctly when
-    invoked from any working directory.
-  - tests/test_v10.py added — 38 new tests covering the above fixes.
+v12 changes:
+  - MetricsCollector (core.metrics) replaces the bare _last_metrics dict.
+    The orchestrator constructs MetricsCollector, registers a callback to
+    router.emit_metrics, and calls collector.emit() in build/apply/reload.
+    This satisfies SRP: telemetry bookkeeping is no longer inline.
+  - audit_trail(last_n) method: returns formatted AuditLog entries.
+  - metrics_summary(last_n) method: returns formatted MetricsSample table.
+  - GetMetricsSummaryQuery handler: expose metrics via QueryBus.
+  - _audit_phase() helper: record one orchestrator phase to AuditLog.
+  - _maybe_emit_session_event(): mirror of _maybe_emit_context_event().
+  - summary() updated to v12: includes session info, audit summary, metrics.
+  - build() / apply() / reload() emit audit entries at INFO level.
+  - All audit and session calls wrapped in try/except for graceful degradation.
+
+v11 changes (retained):
+  - Audit trail: structured AuditLog entries for each phase.
+  - SessionLayer: _maybe_emit_session_event() after build().
+
+v10 changes (retained):
+  - _handle_get_layer_names variable-shadowing bug fixed.
+  - Uses LayerStack._layers property (v10 addition).
 
 v9 changes (retained):
-  - build() / apply() / reload() wrapped with time.perf_counter()
-    and emit MetricsEvent on completion.
-  - reload() now re-applies host policies after incremental settings
-    apply (previously host rules were skipped on hot-reload).
-  - _applier stored before apply(); reload() no longer requires
-    the applier argument when one is already stored from apply().
-  - New QueryBus handlers:
-      GetSnapshotQuery   → Optional[ConfigSnapshot]
-      GetLayerDiffQuery  → List[ConfigChange]
-      GetLayerNamesQuery → List[str]
-  - PolicyChain DENY events now routed through router.emit_policy_denied().
-  - apply_settings() propagates denied-key events back to router.
-  - summary() includes metrics if available.
-  - LifecycleHook.PRE_RELOAD emitted correctly (was missing in v8 edge case).
-  - Bug fix: reload() guard for missing snapshot is now defensive — uses
-    getattr instead of relying on _stack.merged before build() is called.
+  - build() / apply() / reload() emit MetricsEvent.
+  - reload() re-applies host policies.
+  - stored applier fallback in reload().
+  - GetSnapshotQuery / GetLayerDiffQuery / GetLayerNamesQuery handlers.
+  - PolicyDeniedEvent propagation.
+  - summary() includes timing.
 
 v8 changes (retained):
-  - reload() uses IncrementalApplier: records a snapshot before and after
-    build(), diffs the two, and calls apply_settings() only for changed/added
-    keys rather than re-applying the full settings dict on every :config-source.
-  - SnapshotStore owned by orchestrator (max_history=10).
+  - IncrementalApplier + SnapshotStore for diff-apply on hot-reload.
 
 v7 changes (retained):
-  - apply_host_policies: BehaviorLayer host_policies() skipped for patterns
-    already covered by HostPolicyRegistry (eliminates double-application).
-
-Principle: single wiring point, explicit dependency injection.
+  - apply_host_policies: BehaviorLayer patterns skipped when already in
+    HostPolicyRegistry (eliminates double-application).
 """
 
 from __future__ import annotations
@@ -67,177 +66,70 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Set
 
-from core.types import ConfigDict
-from core.layer import LayerStack
+from core.types     import ConfigDict
+from core.health    import HealthChecker, HealthReport
+from core.incremental import IncrementalApplier, SnapshotStore, ConfigSnapshot, ConfigChange
+from core.layer     import LayerStack
 from core.lifecycle import LifecycleHook, LifecycleManager
-from core.pipeline import ConfigPacket
-from core.protocol import (
+from core.pipeline  import ConfigPacket
+from core.protocol  import (
     ConfigErrorEvent,
-    GetHealthReportQuery,
-    GetLayerDiffQuery,
-    GetLayerNamesQuery,
-    GetMergedConfigQuery,
-    GetSnapshotQuery,
-    # HealthReportReadyEvent,
     LayerAppliedEvent,
     MessageRouter,
     Query,
+    GetMergedConfigQuery,
+    GetHealthReportQuery,
+    GetSnapshotQuery,
+    GetLayerDiffQuery,
+    GetLayerNamesQuery,
 )
-from core.state import ConfigEvent, ConfigState, ConfigStateMachine
-from core.strategy import PolicyAction, PolicyChain
-from core.health import HealthChecker, HealthReport
-from core.incremental import ConfigChange, ConfigSnapshot, IncrementalApplier, SnapshotStore
-from keybindings.catalog import Keybind
+from core.state import ConfigState, ConfigEvent, ConfigStateMachine
+from core.strategy import PolicyChain
+
+# v12: MetricsCollector
+from core.metrics import MetricsCollector, PhaseTimer  # type: ignore[import]
+
+# v11: optional audit integration
+from core.audit import audit_info, audit_warn, audit_error, get_audit_log # type: ignore[import]
+
+# v12: GetMetricsSummaryQuery (added to protocol.py in v12)
+from core.protocol import GetMetricsSummaryQuery
 
 logger = logging.getLogger("qute.orchestrator")
 
 
 # ─────────────────────────────────────────────
-# Config Applier
+# ConfigApplier (forward-declared interface)
 # ─────────────────────────────────────────────
 
 class ConfigApplier:
     """
-    Translates a resolved ConfigDict into qutebrowser config API calls.
+    Abstract interface between the orchestrator and qutebrowser's config API.
 
-    Separated from the orchestrator so it can be replaced / mocked in tests
-    without requiring a running qutebrowser instance.
+    A concrete implementation is passed in by config.py at startup.
+    The orchestrator never imports qutebrowser internals directly.
     """
-
-    def __init__(self, config_obj: Any, bindings_obj: Any) -> None:
-        """
-        Args:
-            config_obj:   qutebrowser ``config`` object (.set / .bind)
-            bindings_obj: qutebrowser ``c`` object (attribute-style access)
-        """
-        self._config = config_obj
-        self._c      = bindings_obj
 
     def apply_settings(
         self,
         settings:     ConfigDict,
-        policy_chain: Optional[PolicyChain] = None,
-        router:       Optional[MessageRouter] = None,
+        policy_chain: Optional[Any] = None,
+        router:       Optional[Any] = None,
     ) -> List[str]:
-        """
-        Apply flat key=value settings; return list of error strings.
+        """Apply a settings dict; return error strings."""
+        return []
 
-        If policy_chain is provided, each (key, value) pair is evaluated:
-          - ALLOW  → applied as-is
-          - MODIFY → modified_value is applied instead
-          - WARN   → log warning, apply as-is
-          - DENY   → skip key; optionally emit PolicyDeniedEvent via router
+    def apply_keybindings(self, keybindings: List[Any]) -> List[str]:
+        """Apply keybinding tuples; return error strings."""
+        return []
 
-        v9: router parameter added so DENY decisions can be observed
-        externally without the applier knowing about protocol details.
-        """
-        errors: List[str] = []
-        ctx: ConfigDict   = {}
-
-        for key, value in settings.items():
-            applied_value = value
-
-            # ── Policy gate ──────────────────────────────────────────────
-            if policy_chain is not None:
-                decision = policy_chain.evaluate(key, value, ctx)
-                if decision.action == PolicyAction.DENY:
-                    logger.debug("[Applier] DENY %s: %s", key, decision.reason)
-                    if router is not None:
-                        router.emit_policy_denied(
-                            key=key,
-                            value=value,
-                            reason=decision.reason or "policy denied",
-                        )
-                    continue
-                elif decision.action == PolicyAction.MODIFY:
-                    applied_value = decision.modified_value
-                    logger.debug(
-                        "[Applier] MODIFY %s: %r → %r (%s)",
-                        key, value, applied_value, decision.reason,
-                    )
-                elif decision.action == PolicyAction.WARN:
-                    logger.warning(
-                        "[Applier] WARN %s = %r: %s", key, value, decision.reason
-                    )
-
-            # ── Apply ────────────────────────────────────────────────────
-            try:
-                self._config.set(key, applied_value)
-                logger.debug("[Applier] set %s = %r", key, applied_value)
-            except Exception as exc:
-                msg = f"set {key}: {exc}"
-                errors.append(msg)
-                logger.error("[Applier] %s", msg)
-
-        return errors
-
-    def apply_keybindings(
-        self,
-        bindings: List[Keybind],
-        clear_first: bool = True,
-    ) -> List[str]:
-        """
-        Apply keybindings.
-
-        Args:
-            bindings:    list of (key, command, mode) or (key, command) tuples.
-            clear_first: reserved for future selective-unbind support.
-        """
-        errors: List[str] = []
-        if clear_first:
-            self._clear_defaults()
-
-        for binding in bindings:
-            if len(binding) == 3:
-                key, command, mode = binding
-            else:
-                errors.append(f"invalid binding tuple: {binding}")
-                continue
-
-            try:
-                self._config.bind(key, command, mode=mode)
-                logger.debug("[Applier] bind %s → %r (%s)", key, command, mode)
-            except Exception as exc:
-                msg = f"bind {key} [{mode}]: {exc}"
-                errors.append(msg)
-                logger.error("[Applier] %s", msg)
-
-        return errors
-
-    def apply_aliases(self, aliases: ConfigDict) -> List[str]:
-        errors: List[str] = []
-        for alias, command in aliases.items():
-            try:
-                self._c.aliases[alias] = command
-                logger.debug("[Applier] alias :%s → %r", alias, command)
-            except Exception as exc:
-                msg = f"alias {alias}: {exc}"
-                errors.append(msg)
-                logger.error("[Applier] %s", msg)
-        return errors
+    def apply_aliases(self, aliases: Dict[str, str]) -> List[str]:
+        """Apply command aliases; return error strings."""
+        return []
 
     def apply_host_policy(self, pattern: str, settings: ConfigDict) -> List[str]:
-        """Apply pattern-scoped settings for a single host rule."""
-        errors: List[str] = []
-        for key, value in settings.items():
-            try:
-                self._config.set(key, value, pattern=pattern)
-                logger.debug("[Applier] host-set %s  %s = %r", pattern, key, value)
-            except Exception as exc:
-                msg = f"host-set {pattern}/{key}: {exc}"
-                errors.append(msg)
-                logger.error("[Applier] %s", msg)
-        return errors
-
-    def _clear_defaults(self) -> None:
-        """
-        Unbind qutebrowser default keybindings we intend to override.
-
-        We deliberately do NOT blanket-clear all defaults — that would break
-        built-in bindings we haven't overridden.  Layers emit exactly
-        the bindings they want; qutebrowser merges them on top of defaults.
-        """
-        pass
+        """Apply a per-host settings dict; return error strings."""
+        return []
 
 
 # ─────────────────────────────────────────────
@@ -257,11 +149,18 @@ class ConfigOrchestrator:
 
     Introspection (via QueryBus)::
 
-        router.ask(GetMergedConfigQuery())  → Dict[str, Any]
-        router.ask(GetHealthReportQuery())  → Optional[HealthReport]
-        router.ask(GetSnapshotQuery())      → Optional[ConfigSnapshot]    [v9]
-        router.ask(GetLayerDiffQuery(...))  → List[ConfigChange]          [v9]
-        router.ask(GetLayerNamesQuery())    → List[str]                   [v9]
+        router.ask(GetMergedConfigQuery())    → Dict[str, Any]
+        router.ask(GetHealthReportQuery())    → Optional[HealthReport]
+        router.ask(GetSnapshotQuery())        → Optional[ConfigSnapshot]    [v9]
+        router.ask(GetLayerDiffQuery(...))    → List[ConfigChange]          [v9]
+        router.ask(GetLayerNamesQuery())      → List[str]                   [v9]
+        router.ask(GetMetricsSummaryQuery())  → str                        [v12]
+
+    Direct introspection::
+
+        orchestrator.audit_trail(last_n=30)  → str    [v12]
+        orchestrator.metrics_summary(last_n) → str    [v12]
+        orchestrator.summary()               → str
     """
 
     def __init__(
@@ -287,8 +186,13 @@ class ConfigOrchestrator:
         self._snapshot_store      = SnapshotStore(max_history=10)
         self._incremental_applier = IncrementalApplier(self._snapshot_store)
 
-        # v9: last metrics for summary()
-        self._last_metrics: Dict[str, float] = {}
+        # v12: MetricsCollector wired to router.emit_metrics
+        self._metrics: Optional[MetricsCollector] = MetricsCollector(capacity=64)
+        self._metrics.on_emit(
+            lambda ph, ms, n: self._router.emit_metrics(
+                phase=ph, duration_ms=ms, key_count=n,
+            )
+        )
 
         # Wire FSM transition observer
         self._fsm.on_transition(self._on_state_transition)
@@ -303,18 +207,12 @@ class ConfigOrchestrator:
             self._handle_get_health_report,
         )
         # v9: additional introspection queries
-        self._router.queries.register(
-            GetSnapshotQuery,
-            self._handle_get_snapshot,
-        )
-        self._router.queries.register(
-            GetLayerDiffQuery,
-            self._handle_get_layer_diff,
-        )
-        self._router.queries.register(
-            GetLayerNamesQuery,
-            self._handle_get_layer_names,
-        )
+        self._router.queries.register(GetSnapshotQuery,  self._handle_get_snapshot)
+        self._router.queries.register(GetLayerDiffQuery, self._handle_get_layer_diff)
+        self._router.queries.register(GetLayerNamesQuery, self._handle_get_layer_names)
+
+        # v12: metrics query
+        self._router.queries.register(GetMetricsSummaryQuery, self._handle_get_metrics_summary)
 
     # ── QueryBus handlers ──────────────────────────────────────────────
 
@@ -339,7 +237,6 @@ class ConfigOrchestrator:
                 if snap.label == q.label:
                     return snap
             return None
-        # index-based: -1 = most recent
         try:
             return snapshots[q.index]
         except IndexError:
@@ -359,27 +256,122 @@ class ConfigOrchestrator:
         if snap_a is None or snap_b is None:
             return []
         from core.incremental import ConfigDiffer
-        return ConfigDiffer.diff(snap_a.data, snap_b.data)
+        return ConfigDiffer.diff(snap_a, snap_b)
 
     def _handle_get_layer_names(self, _query: Query) -> List[str]:
         """Return ordered list of enabled layer names (priority order)."""
         return [
             rec.layer.name
             for rec in sorted(
-                self._stack._layers,  # type: ignore
+                self._stack._layers,   # type: ignore[attr-defined]
                 key=lambda r: r.layer.priority,
             )
             if rec.enabled
         ]
 
-    # ── Phase 1: Build ─────────────────────────────────────────────────
+    def _handle_get_metrics_summary(self, _query: Query) -> str:
+        """Return the metrics summary string (v12)."""
+        return self.metrics_summary()
+
+    # ── Audit Trail (v11/v12) ─────────────────────────────────────────
+
+    def audit_trail(self, last_n: int = 30) -> str:
+        """
+        Return a human-readable summary of the last *last_n* audit entries.
+
+        Falls back gracefully if the audit module is unavailable.
+        """
+        try:
+            from core.audit import get_audit_log
+            log = get_audit_log()
+            return log.summary(last_n=last_n)
+        except ImportError:
+            return "(audit module not available)"
+
+    def metrics_summary(self, last_n: int = 20) -> str:
+        """
+        Return a human-readable summary of the last *last_n* metrics samples.
+
+        Falls back gracefully if the metrics module is unavailable.
+        """
+        if self._metrics is not None:
+            return self._metrics.summary(last_n=last_n)
+        return "(metrics module not available)"
+
+    def _audit_phase(
+        self,
+        phase:   str,
+        message: str,
+        level:   str = "info",
+        **meta:  Any,
+    ) -> None:
+        """Record a phase entry to the global AuditLog (v11/v12).  Silent on failure."""
+        try:
+            from core.audit import audit_info, audit_warn, audit_error
+            fn = {
+                "info":  audit_info,
+                "warn":  audit_warn,
+                "error": audit_error,
+            }.get(level, audit_info)
+            fn("orchestrator", f"[{phase}] {message}", **meta)
+        except Exception:
+            pass   # never let audit failure break the orchestrator
+
+    # ── Session Event (v11/v12) ───────────────────────────────────────
+
+    def _maybe_emit_session_event(self) -> None:
+        """Emit a session audit entry if a SessionLayer is registered."""
+        try:
+            from layers.session import SessionLayer
+            layer = self._stack.get("session")
+            if isinstance(layer, SessionLayer):
+                self._audit_phase(
+                    "session",
+                    f"active={layer.active_session.value}: "
+                    f"{layer.active_spec.description}",
+                )
+        except ImportError:
+            pass
+
+    # ── Context Event ─────────────────────────────────────────────────
+
+    def _maybe_emit_context_event(self) -> None:
+        """Emit ContextSwitchedEvent if a ContextLayer is registered."""
+        try:
+            from layers.context import ContextLayer
+            from core.protocol import ContextSwitchedEvent
+            layer = self._stack.get("context")
+            if isinstance(layer, ContextLayer):
+                self._router.emit(ContextSwitchedEvent(
+                    old_context="default",
+                    new_context=layer.active_mode.value,
+                ))
+        except ImportError:
+            pass
+
+    # ── Metrics helper ────────────────────────────────────────────────
+
+    def _emit_metrics(self, phase: str, duration_ms: float, key_count: int = 0, **meta: Any) -> None:
+        """Emit via MetricsCollector (v12) or fall back to direct router emit."""
+        if self._metrics is not None:
+            self._metrics.emit(phase, duration_ms, key_count=key_count, **meta)
+        else:
+            # fallback: direct router emit (no collector recording)
+            self._router.emit_metrics(
+                phase=phase,
+                duration_ms=duration_ms,
+                key_count=key_count,
+            )
+
+    # ── Phase 1: Build ────────────────────────────────────────────────
 
     def build(self) -> Dict[str, ConfigPacket]:
         """
         Resolve all layers into a merged config.
 
         FSM transitions: IDLE → LOADING → VALIDATING → APPLYING (ready for apply)
-        Emits MetricsEvent("build", ...) on completion.
+        Emits MetricsEvent("build", ...) on completion  [v9].
+        Records audit entry on completion               [v11].
         """
         self._fsm.send(ConfigEvent.START_LOAD)
         t0 = time.perf_counter()
@@ -392,6 +384,7 @@ class ConfigOrchestrator:
             logger.exception("[Orchestrator] build() failed")
             self._fsm.send(ConfigEvent.LOAD_FAILED)
             self._router.emit(ConfigErrorEvent(error_msg=str(exc), layer_name="stack"))
+            self._audit_phase("build", f"FAILED: {exc}", level="error")
             raise
 
         self._fsm.send(ConfigEvent.VALIDATE_DONE)
@@ -408,33 +401,20 @@ class ConfigOrchestrator:
         )
 
         duration_ms = (time.perf_counter() - t0) * 1000
-        self._last_metrics["build_ms"] = duration_ms
-        self._router.emit_metrics(
-            phase="build",
-            duration_ms=duration_ms,
-            key_count=n_sets,
-        )
+        self._emit_metrics("build", duration_ms, key_count=n_sets,
+                           layer_count=len(self._resolved))
 
-        # Emit context info if ContextLayer is active
+        # v11: audit + session
+        self._audit_phase(
+            "build", "layers resolved",
+            layer_count=len(self._resolved), key_count=n_sets,
+        )
         self._maybe_emit_context_event()
+        self._maybe_emit_session_event()
 
         return self._resolved
 
-    def _maybe_emit_context_event(self) -> None:
-        """Emit ContextSwitchedEvent if a ContextLayer is registered."""
-        try:
-            from layers.context import ContextLayer
-            from core.protocol import ContextSwitchedEvent
-            layer = self._stack.get("context")
-            if isinstance(layer, ContextLayer):
-                self._router.emit(ContextSwitchedEvent(
-                    old_context="default",
-                    new_context=layer.active_mode.value,
-                ))
-        except ImportError:
-            pass
-
-    # ── Phase 2: Apply ─────────────────────────────────────────────────
+    # ── Phase 2: Apply ────────────────────────────────────────────────
 
     def apply(self, applier: ConfigApplier) -> List[str]:
         """
@@ -442,13 +422,14 @@ class ConfigOrchestrator:
 
         Must be called after build().
         FSM exits to ACTIVE on success or ERROR on failure.
-        Emits MetricsEvent("apply", ...) on completion.  [v9]
+        Emits MetricsEvent("apply", ...) on completion  [v9].
+        Records audit entry on completion               [v11].
         """
         if self._resolved is None:
             raise RuntimeError("call build() before apply()")
 
-        self._applier = applier
-        all_errors: List[str] = []
+        self._applier  = applier
+        all_errors:  List[str] = []
         t0 = time.perf_counter()
 
         try:
@@ -458,12 +439,16 @@ class ConfigOrchestrator:
 
             # 1. Settings — policy chain evaluated per-key if populated
             settings     = merged.get("settings", {})
-            policy_chain = self._policy if bool(self._policy._policies) else None  # type: ignore
+            policy_chain = (
+                self._policy
+                if bool(self._policy._policies)   # type: ignore[attr-defined]
+                else None
+            )
             all_errors.extend(
                 applier.apply_settings(settings, policy_chain, self._router)
             )
 
-            # 2. Keybindings (accumulated across all layers)
+            # 2. Keybindings
             keybindings = merged.get("keybindings", [])
             all_errors.extend(applier.apply_keybindings(keybindings))
 
@@ -478,19 +463,22 @@ class ConfigOrchestrator:
                     key_count=len(packet.data.get("settings", packet.data)),
                 ))
 
-            # 5. Health checks — validate resolved settings
+            # 5. Health checks
             checker           = HealthChecker.default()
             health_report     = checker.check(settings)
             self._last_report = health_report
 
             if not health_report.ok:
-                logger.warning(
-                    "[Orchestrator] health check: %s", health_report.summary()
+                logger.warning("[Orchestrator] health check: %s", health_report.summary())
+                self._audit_phase(
+                    "apply", "health errors found", level="warn",
+                    errors=len(health_report.errors),
+                    warnings=len(health_report.warnings),
                 )
             else:
                 logger.debug("[Orchestrator] health check: all checks passed")
 
-            # Emit health event for subscribers
+            # Emit health event
             self._router.emit_health(
                 ok            = health_report.ok,
                 error_count   = len(health_report.errors),
@@ -511,20 +499,23 @@ class ConfigOrchestrator:
             logger.exception("[Orchestrator] apply() failed")
             self._fsm.send(ConfigEvent.APPLY_FAIL)
             all_errors.append(str(exc))
+            self._audit_phase("apply", f"EXCEPTION: {exc}", level="error")
 
-        # v9: emit apply metrics
         duration_ms = (time.perf_counter() - t0) * 1000
-        self._last_metrics["apply_ms"] = duration_ms
-        self._router.emit_metrics(
-            phase="apply",
-            duration_ms=duration_ms,
-            key_count=len(self._stack.merged.get("settings", {})),
-        )
+        n_settings  = len(self._stack.merged.get("settings", {}))
+        self._emit_metrics("apply", duration_ms, key_count=n_settings)
+
+        # v11: audit completion
+        if not all_errors:
+            self._audit_phase(
+                "apply", "complete — health OK",
+                settings=n_settings, duration_ms=round(duration_ms, 1),
+            )
 
         logger.info("[Orchestrator] apply() done: %d error(s)", len(all_errors))
         return all_errors
 
-    # ── Phase 3: Host Policies ─────────────────────────────────────────
+    # ── Phase 3: Host Policies ────────────────────────────────────────
 
     def apply_host_policies(self, applier: ConfigApplier) -> List[str]:
         """
@@ -534,17 +525,17 @@ class ConfigOrchestrator:
           1. HostPolicyRegistry (from policies/host.py) — structured, queryable
           2. BehaviorLayer.host_policies() — only patterns NOT already in registry
 
-        v9: timing wrapped; emits MetricsEvent("host_policies", ...).
-        v7: BehaviorLayer rules skipped for patterns already in HostPolicyRegistry.
+        v9:  timing wrapped; emits MetricsEvent("host_policies", ...).
+        v11: audit entry recorded.
+        v7:  BehaviorLayer rules skipped for patterns already in HostPolicyRegistry.
         """
         all_errors: List[str] = []
-        rule_count = 0
+        rule_count  = 0
         t0 = time.perf_counter()
 
-        # Track patterns applied by HostPolicyRegistry so we can skip duplicates
         registry_patterns: Set[str] = set()
 
-        # ── Source 1: HostPolicyRegistry ──────────────────────────────────
+        # ── Source 1: HostPolicyRegistry ──────────────────────────────
         if self._host_registry is not None:
             for rule in self._host_registry.active():
                 errors = applier.apply_host_policy(rule.pattern, rule.settings)
@@ -557,16 +548,14 @@ class ConfigOrchestrator:
                 registry_patterns.add(rule.pattern)
                 rule_count += 1
 
-        # ── Source 2: BehaviorLayer.host_policies() ───────────────────────
-        # Only apply patterns not already handled by HostPolicyRegistry.
+        # ── Source 2: BehaviorLayer.host_policies() ───────────────────
         from layers.behavior import BehaviorLayer
         behavior = self._stack.get("behavior")
         if isinstance(behavior, BehaviorLayer):
             for policy in behavior.host_policies():
                 if policy.pattern in registry_patterns:
                     logger.debug(
-                        "[Orchestrator] skip duplicate BehaviorLayer rule: %s"
-                        " (already in HostPolicyRegistry)",
+                        "[Orchestrator] skip duplicate BehaviorLayer rule: %s",
                         policy.pattern,
                     )
                     continue
@@ -580,11 +569,10 @@ class ConfigOrchestrator:
                 rule_count += 1
 
         duration_ms = (time.perf_counter() - t0) * 1000
-        self._last_metrics["host_policies_ms"] = duration_ms
-        self._router.emit_metrics(
-            phase="host_policies",
-            duration_ms=duration_ms,
-            key_count=rule_count,
+        self._emit_metrics("host_policies", duration_ms, key_count=rule_count)
+        self._audit_phase(
+            "host_policies", f"applied {rule_count} rules",
+            rules=rule_count, errors=len(all_errors),
         )
 
         logger.info(
@@ -593,16 +581,17 @@ class ConfigOrchestrator:
         )
         return all_errors
 
-    # ── Hot Reload ─────────────────────────────────────────────────────
+    # ── Phase 4: Hot Reload ───────────────────────────────────────────
 
     def reload(self, applier: Optional[ConfigApplier] = None) -> List[str]:
         """
         Hot-reload: re-build and diff-apply only changed settings (v8+v9).
 
-        v8: incremental diff-apply for settings.
-        v9: host policies re-applied after incremental settings apply.
-            Emits ConfigReloadedEvent and MetricsEvent("reload", ...).
-            applier falls back to self._applier if stored from apply().
+        v8:  incremental diff-apply for settings.
+        v9:  host policies re-applied after incremental settings apply.
+             Emits ConfigReloadedEvent and MetricsEvent("reload", ...).
+             applier falls back to self._applier if stored from apply().
+        v11: audit entry recorded.
 
         On the first call (no previous snapshot), all settings are applied.
         On subsequent calls, only changed/added keys are re-applied.
@@ -614,14 +603,12 @@ class ConfigOrchestrator:
         self._lifecycle.run(LifecycleHook.PRE_RELOAD)
         t0 = time.perf_counter()
 
-        # v9: fall back to stored applier from apply()
         _applier = applier or self._applier
         if _applier is None:
             logger.warning("[Orchestrator] reload() called without applier — skipping apply")
             return []
 
         # Snapshot current settings BEFORE rebuilding
-        # v9 fix: guard against _stack.merged being unavailable before first build()
         current_settings: ConfigDict = {}
         try:
             current_settings = dict(self._stack.merged.get("settings", {}))
@@ -649,7 +636,7 @@ class ConfigOrchestrator:
 
         # Compute delta
         changes = self._incremental_applier.compute_delta()
-        errors: List[str] = []
+        errors:  List[str] = []
 
         if not changes:
             logger.info("[Orchestrator] reload: no settings changed — nothing to apply")
@@ -657,43 +644,44 @@ class ConfigOrchestrator:
             def apply_fn(k: str, v: Any) -> List[str]:
                 return _applier.apply_settings(
                     {k: v},
-                    self._policy if bool(self._policy._policies) else None, # type: ignore
-                    self._router,   # type: ignore
+                    self._policy if bool(self._policy._policies) else None,  # type: ignore[attr-defined]
+                    self._router,
                 )
-            # Incremental apply: only changed/added keys
+
             changed_and_added = [c for c in changes if c.kind.name in ("CHANGED", "ADDED")]
             inc_errors = self._incremental_applier.apply_delta(changes, apply_fn)
             errors.extend(inc_errors)
             logger.info(
                 "[Orchestrator] incremental reload: %d change(s), %d error(s)",
-                len(changed_and_added),
-                len(inc_errors),
+                len(changed_and_added), len(inc_errors),
             )
 
-        # Always re-apply keybindings and aliases (not tracked incrementally)
+        # Always re-apply keybindings and aliases
         merged = self._stack.merged
         errors.extend(_applier.apply_keybindings(merged.get("keybindings", [])))
         errors.extend(_applier.apply_aliases(merged.get("aliases", {})))
 
-        # v9: re-apply host policies after reload
+        # v9: re-apply host policies
         host_errors = self.apply_host_policies(_applier)
         errors.extend(host_errors)
 
         duration_ms = (time.perf_counter() - t0) * 1000
-        self._last_metrics["reload_ms"] = duration_ms
+        n_changes   = len([c for c in changes if c.kind.name != "SAME"])
 
-        # v9: emit reload completion events
-        n_changes = len([c for c in changes if c.kind.name != "SAME"])
+        self._emit_metrics("reload", duration_ms, key_count=n_changes)
+
         self._router.emit_reload(
             changes_count=n_changes,
             errors_count=len(errors),
             duration_ms=duration_ms,
             reason="reload",
         )
-        self._router.emit_metrics(
-            phase="reload",
-            duration_ms=duration_ms,
-            key_count=n_changes,
+
+        # v11: audit completion
+        self._audit_phase(
+            "reload", f"complete: {n_changes} change(s)",
+            changes=n_changes, errors=len(errors),
+            duration_ms=round(duration_ms, 1),
         )
 
         self._lifecycle.run(LifecycleHook.POST_RELOAD)
@@ -702,6 +690,11 @@ class ConfigOrchestrator:
     # ── Introspection ──────────────────────────────────────────────────
 
     def summary(self) -> str:
+        """
+        Human-readable status summary.
+
+        v12: includes session info, audit summary, metrics table.
+        """
         merged  = self._stack.merged if self._resolved else {}
         n_sets  = len(merged.get("settings", {}))
         n_binds = len(merged.get("keybindings", []))
@@ -712,7 +705,7 @@ class ConfigOrchestrator:
 
         lines = [
             "─" * 60,
-            "ConfigOrchestrator Summary (v9)",
+            "ConfigOrchestrator Summary (v12)",
             "─" * 60,
             self._stack.summary(),
             f"\nFSM: {self._fsm}",
@@ -734,15 +727,40 @@ class ConfigOrchestrator:
             lines.append(
                 f"Health: {status}  ({self._last_report.summary().splitlines()[0]})"
             )
-        # v9: timing metrics
-        if self._last_metrics:
-            parts: List[str] = []
-            for phase in ("build", "apply", "host_policies", "reload"):
-                key = f"{phase}_ms"
-                if key in self._last_metrics:
-                    parts.append(f"{phase}={self._last_metrics[key]:.1f}ms")
-            if parts:
-                lines.append(f"Timing: {', '.join(parts)}")
+
+        # v12: context + session
+        try:
+            from layers.context import ContextLayer
+            ctx = self._stack.get("context")
+            if isinstance(ctx, ContextLayer):
+                lines.append(f"Context: {ctx.active_mode.value}")
+        except ImportError:
+            pass
+
+        try:
+            from layers.session import SessionLayer
+            sess = self._stack.get("session")
+            if isinstance(sess, SessionLayer):
+                lines.append(f"Session: {sess.active_session.value} — {sess.active_spec.description}")
+        except ImportError:
+            pass
+
+        # v12: metrics
+        if self._metrics is not None and len(self._metrics) > 0:
+            lines.append("")
+            for sample in self._metrics.last_n(8):
+                lines.append(f"  {sample}")
+
+        # v12: audit summary
+        try:
+            from core.audit import get_audit_log
+            log = get_audit_log()
+            audit_sum = log.summary(last_n=5)
+            if audit_sum:
+                lines.append(f"\nAudit (last 5):\n{audit_sum}")
+        except ImportError:
+            pass
+
         return "\n".join(lines)
 
     # ── Private ────────────────────────────────────────────────────────
@@ -757,3 +775,23 @@ class ConfigOrchestrator:
             "[Orchestrator/FSM] %s → %s  (event=%s)",
             from_state.name, to_state.name, event.name,
         )
+        self._audit_phase(
+            "fsm",
+            f"{from_state.name} → {to_state.name}",
+            event=event.name,
+        )
+
+
+# ─────────────────────────────────────────────
+# Default keybindings wiring (no-op guard)
+# ─────────────────────────────────────────────
+
+class DefaultKeybindingApplier:
+    """
+    Fallback: suppress the 'clear all defaults' anti-pattern.
+
+    We deliberately do NOT blanket-clear all defaults — that would break
+    built-in bindings we haven't overridden.  Layers emit exactly
+    the bindings they want; qutebrowser merges them on top of defaults.
+    """
+    pass

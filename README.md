@@ -2,7 +2,7 @@
 
 > A principled, layered qutebrowser configuration — built like software, not a script.
 
-**259 tests · 7 layers · 8 core modules · 4 strategy modules · 4 policy modules · 18+ themes · NixOS-ready**
+**315+ tests · 8 layers · 10 core modules · 4 strategy modules · 4 policy modules · 18+ themes · NixOS-ready**
 
 ---
 
@@ -36,34 +36,37 @@ config.py  ← qutebrowser loads ONLY this file
           │     ├── BehaviorLayer    [p=40]  UX, keybindings, per-host rules
           │     ├── ContextLayer     [p=45]  situational mode (work/research/media/dev/writing/gaming)
           │     ├── PerformanceLayer [p=50]  cache & rendering tuning
+          │     ├── SessionLayer     [p=55]  time-aware mode (day/evening/night/focus/commute/present) ← v11
           │     └── UserLayer        [p=90]  personal overrides (highest)
           ├── ConfigStateMachine     IDLE → LOADING → VALIDATING → APPLYING → ACTIVE
           ├── MessageRouter          EventBus + CommandBus + QueryBus
           ├── LifecycleManager       PRE_INIT → POST_INIT → PRE_APPLY → POST_APPLY → PRE_RELOAD → POST_RELOAD
           ├── HostPolicyRegistry     per-host config.set(…, pattern=…) rules
           ├── HealthChecker          post-apply validation (18 built-in checks)
-          └── IncrementalApplier     delta-only hot reload (wired into reload())
+          ├── IncrementalApplier     delta-only hot reload (wired into reload())
+          └── AuditLog               ring-buffer audit trail (capacity=512)           ← v11
 ```
 
 ---
 
 ## Design Principles
 
-| Principle                 | Implementation                                                                 |
-| ------------------------- | ------------------------------------------------------------------------------ |
-| **Dependency Inversion**  | Layers depend on `LayerProtocol`; orchestrator depends on abstractions         |
-| **Single Responsibility** | `pipeline.py` transforms, `state.py` tracks FSM, `protocol.py` routes          |
-| **Open/Closed**           | New layers/stages/strategies/policies register without modifying existing code |
-| **Layered Architecture**  | Strict priority; higher layers override lower; no circular deps                |
-| **Pipeline / Data Flow**  | Config flows as `ConfigPacket` through composable `PipeStage` chains           |
-| **State Machine**         | Lifecycle is explicit; transitions are data-driven                             |
-| **Strategy Pattern**      | Privacy, performance, merge, search engines are interchangeable                |
-| **Policy Chain**          | Validation rules compose via Chain of Responsibility                           |
-| **Event-Driven / CQRS**   | Cross-module via typed events — never direct imports between modules           |
-| **Incremental/Delta**     | Hot-reload applies only changed keys                                           |
-| **Data-Driven**           | Host rules, search engines, color schemes, contexts are data not code          |
-| **Health Checks**         | Post-apply validation catches misconfiguration before it silently fails        |
-| **Observable**            | Every phase emits MetricsEvent; reload emits ConfigReloadedEvent               |
+| Principle                 | Implementation                                                                  |
+| ------------------------- | ------------------------------------------------------------------------------- |
+| **Dependency Inversion**  | Layers depend on `LayerProtocol`; orchestrator depends on abstractions          |
+| **Single Responsibility** | `pipeline.py` transforms, `state.py` tracks FSM, `protocol.py` routes           |
+| **Open/Closed**           | New layers/stages/strategies/policies register without modifying existing code  |
+| **Layered Architecture**  | Strict priority; higher layers override lower; no circular deps                 |
+| **Pipeline / Data Flow**  | Config flows as `ConfigPacket` through composable `PipeStage` chains            |
+| **State Machine**         | Lifecycle is explicit; transitions are data-driven                              |
+| **Strategy Pattern**      | Privacy, performance, merge, search engines are interchangeable                 |
+| **Policy Chain**          | Validation rules compose via Chain of Responsibility                            |
+| **Event-Driven / CQRS**   | Cross-module via typed events — never direct imports between modules            |
+| **Incremental/Delta**     | Hot-reload applies only changed keys                                            |
+| **Data-Driven**           | Host rules, search engines, color schemes, contexts, sessions are data not code |
+| **Health Checks**         | Post-apply validation catches misconfiguration before it silently fails         |
+| **Observable**            | Every phase emits MetricsEvent; reload emits ConfigReloadedEvent                |
+| **Audit Trail** ← v11     | Structured ring-buffer log of all config lifecycle events                       |
 
 ---
 
@@ -88,171 +91,197 @@ Or switch at runtime — the choice persists in `~/.config/qutebrowser/.context`
 
 ---
 
-## Keybindings (v9 additions)
+## Session System ← v11
 
-### Normal mode
+Time-aware configuration that adapts to the current moment — no restart needed.
 
-| Key          | Action                         |
-| ------------ | ------------------------------ |
-| `v`          | Enter caret mode               |
-| `<ctrl-v>`   | Enter passthrough (single key) |
-| `<alt-1..9>` | Jump to tab position 1..9      |
-| `,t`         | Open new tab                   |
-| `,T`         | Clone current tab              |
-| `,q`         | Close tab                      |
-| `,Q`         | Close window                   |
-| `,/`         | Open find bar                  |
-| `,?`         | Open reverse find bar          |
-| `<ctrl-d>`   | Scroll down half page          |
-| `<ctrl-u>`   | Scroll up half page            |
-| `<ctrl-f>`   | Scroll down full page          |
-| `<ctrl-b>`   | Scroll up full page            |
+| Key   | Session | When                        | Changes                              |
+| ----- | ------- | --------------------------- | ------------------------------------ |
+| `,Sd` | day     | 08:00–18:00 (auto)          | Standard defaults; autoplay off      |
+| `,Se` | evening | 18:00–22:00 (auto)          | +5% zoom, 18px web font              |
+| `,Sn` | night   | 22:00–06:00 (auto)          | 110% zoom, 20px font, minimal chrome |
+| `,Sf` | focus   | Deep work (manual)          | Hide statusbar, 18px font, no notifs |
+| `,Sc` | commute | Mobile / bandwidth (manual) | No images, no autoplay, 110% zoom    |
+| `,Sp` | present | Screen-share (manual)       | 125% zoom, 22px font, full chrome    |
+| `,S0` | auto    | Reset to time-derived       | Auto-detects from local time         |
+| `,Si` | —       | —                           | Show current session in message bar  |
 
-### Caret mode (v9)
+Set `ACTIVE_SESSION = "focus"` in config.py for a permanent session.
+Or use the environment variable: `QUTE_SESSION=night qutebrowser`.
+Or switch at runtime — the choice persists in `~/.config/qutebrowser/.session`.
 
-| Key        | Action                |
-| ---------- | --------------------- |
-| `H`        | Move to previous word |
-| `L`        | Move to next word     |
-| `V`        | Toggle line selection |
-| `y` / `^C` | Yank selection        |
-| `q` / Esc  | Leave caret mode      |
+**Session vs Context:**
+
+- **Context** = _what_ you're browsing (search engines + per-site settings)
+- **Session** = _how_ the browser behaves right now (zoom, font, chrome density)
+
+Both systems are orthogonal and compose naturally.
 
 ---
 
-## Project Structure
+## Audit Trail ← v11
 
+Every config lifecycle event is recorded in a structured ring-buffer log.
+
+```python
+# Access from Python (no qutebrowser needed)
+from core.audit import get_audit_log, AuditFilter, AuditLevel
+
+log = get_audit_log()
+log.summary(last_n=20)              # last 20 entries
+log.errors()                        # ERROR entries only
+log.query(AuditFilter.errors_and_warnings())  # WARN+ERROR
+log.export_json()                   # JSON array
+log.export_markdown()               # Markdown table
 ```
-qutebrowser-config/
-├── config.py               ← ONLY file you edit
-├── orchestrator.py         ← composition root
-│
-├── core/                   ← stable architecture
-│   ├── __init__.py         ← full public API exports (v10)
-│   ├── pipeline.py         ← ConfigPacket + Pipeline + FilterStage
-│   ├── state.py            ← FSM + transitions
-│   ├── lifecycle.py        ← LifecycleManager
-│   ├── protocol.py         ← MessageRouter (EventBus/CommandBus/QueryBus)
-│   ├── layer.py            ← LayerProtocol + LayerStack + _layers (v10 fix)
-│   ├── strategy.py         ← Strategy + Policy + PolicyChain
-│   ├── incremental.py      ← delta apply + snapshots + rollback
-│   └── health.py           ← HealthChecker (21 checks)
-│
-├── layers/                 ← extend here
-│   ├── base.py  [p=10] · privacy.py [p=20] · appearance.py [p=30]
-│   ├── behavior.py [p=40] · context.py [p=45] · performance.py [p=50]
-│   └── user.py [p=90]
-│
-├── strategies/             merge.py · profile.py · search.py · download.py
-├── policies/               content.py · network.py · security.py · host.py
-├── themes/                 extended.py  (18+ color schemes)
-├── keybindings/            catalog.py   (query + conflict detection)
-│
-├── scripts/
-│   ├── install.sh           ← deployment
-│   ├── gen_keybindings.py   ← auto-gen KEYBINDINGS.md
-│   ├── context_switch.py    ← runtime context switching (7 contexts)
-│   ├── open_with.py · readability.py · password.py
-│   ├── search_sel.py · tab_restore.py
-│
-└── tests/
-    ├── conftest.py          ← sys.path setup for pytest (v10)
-    ├── test_architecture.py · test_incremental.py
-    ├── test_extensions.py   · test_health.py
-    └── test_v10.py          ← v10 regression + feature tests
+
+Or use the CLI:
+
+```bash
+python3 scripts/diagnostics.py audit          # text
+python3 scripts/diagnostics.py audit --format markdown
 ```
 
 ---
 
-## v10 What's New
+## CLI Diagnostics ← v11
 
-### Bug Fixes
+```bash
+# Full diagnostic report
+python3 scripts/diagnostics.py
 
-- **`core/layer.py`** — `LayerStack._layers` property added (alias for `_records`).
-  The `GetLayerNamesQuery` handler in `orchestrator.py` referenced a non-existent
-  `_layers` attribute; this caused a silent `AttributeError` at runtime.
-- **`orchestrator.py`** — `_handle_get_layer_names` variable-shadowing bug fixed.
-  The comprehension now uses `rec.layer.name` / `rec.enabled` from the same loop
-  variable instead of mixing `layer` and `rec` from different scopes.
+# Individual commands
+python3 scripts/diagnostics.py layers      # layer stack
+python3 scripts/diagnostics.py health      # health checks
+python3 scripts/diagnostics.py contexts    # context table
+python3 scripts/diagnostics.py sessions    # session table
+python3 scripts/diagnostics.py themes      # available themes
+python3 scripts/diagnostics.py keybindings # full keybinding reference
 
-### Package Structure
+# Options
+python3 scripts/diagnostics.py health --context dev --theme nord
+python3 scripts/diagnostics.py summary --format markdown --out report.md
+```
 
-The project now uses the sub-package layout all imports always required:
-`core/`, `layers/`, `strategies/`, `policies/`, `themes/`, `keybindings/`.
-Previously all files were flat in the root; this caused `ModuleNotFoundError`
-on any system that ran tests directly. All 221 prior tests now pass cleanly,
-plus 38 new v10 tests (total: **259**).
-
-### Improved
-
-- **`core/__init__.py`** — Exports the full public API surface with `__all__`
-  (was empty). `FilterStage` and `LayerRecord` are newly exported.
-- **`tests/conftest.py`** — `sys.path` inserted unconditionally; pytest now
-  works from any working directory, IDE, or CI runner.
-- **`tests/test_v10.py`** — 38 new tests: package imports, `_layers` property,
-  `GetLayerNamesQuery` end-to-end, `FilterStage` coverage, `core.__all__` surface.
+Exit code 0 = clean; 1 = health errors found; 2 = import error.
 
 ---
 
-## v9 What's New
+## Configuration
 
-### Architecture
-
-- **`protocol.py`** — 5 new events (`ConfigReloadedEvent`, `SnapshotTakenEvent`, `LayerConflictEvent`, `PolicyDeniedEvent`, `MetricsEvent`); 3 new queries (`GetSnapshotQuery`, `GetLayerDiffQuery`, `GetLayerNamesQuery`); `EventBus.unsubscribe_all()` for test isolation
-- **`orchestrator.py`** — timing metrics on every phase; host policies re-applied on reload (was missing); stored applier fallback in `reload()`; `PolicyDeniedEvent` emitted on DENY; new QueryBus handlers
-- **`incremental.py`** — `apply_delta()` type fix (errors returned, not discarded); `rollback(steps)` added; `ConfigDiffer` promoted to public class; `SnapshotStore.find()`, `.snapshots`, `.clear()` added
-- **`health.py`** — 3 new checks; `HealthChecker.with_checks()` factory; `HealthReport.summary()` multi-line categorised output; injectable `extra_checks` in `check()`
-
-### Layers
-
-- **`behavior.py`** — caret mode bindings; passthrough; `<alt-1..9>` tab jumps; `,t`/`,T`/`,q`/`,Q`; `,/`/`,?` find; security settings hardened
-- **`base.py`** — PDF viewer, JS alert/prompt, popup blocker, pinned tab settings, fullscreen, GPU rendering, messages timeout
-
-### Config Surface
-
-- `USER_MESSAGES_TIMEOUT` — control notification display time
-- `POST_RELOAD` lifecycle hook exposed
-- New event subscribers logged (reload stats, metrics, policy denials)
-
-### Add a Theme
-
-Add `ColorScheme(…)` to `themes/extended.py` → `EXTENDED_THEMES`, then set `THEME`.
-
-### Add a Layer (example: work layer at priority 60)
+Edit **only** the `CONFIGURATION SECTION` at the top of `config.py`:
 
 ```python
-# layers/work.py
-from core.layer import BaseConfigLayer
-class WorkLayer(BaseConfigLayer):
-    name = "work"; priority = 60
-    def _settings(self):
-        return {"url.searchengines": {"DEFAULT": "https://intranet.co?q={}"}}
+# Theme (see themes/extended.py for full list)
+THEME = "glass"
+
+# Privacy profile
+PRIVACY_PROFILE = PrivacyProfile.STANDARD   # STANDARD | HARDENED | PARANOID
+
+# Performance profile
+PERFORMANCE_PROFILE = PerformanceProfile.BALANCED  # BALANCED | HIGH | LOW | LAPTOP
+
+# Context (None = no override; resolved from env/file at runtime)
+ACTIVE_CONTEXT: Optional[str] = None
+
+# Session (None = auto-detect from local time)  ← v11
+ACTIVE_SESSION: Optional[str] = None
+
+# Layers to load (set False to disable)
+LAYERS: dict[str, bool] = {
+    "base": True, "privacy": True, "appearance": True,
+    "behavior": True, "context": True, "performance": True,
+    "session": True,   # v11
+    "user": True,
+}
 ```
 
-Register in `config.py`'s `_build_orchestrator()`.
+---
 
-### Add a Per-Host Rule
+## File Map
 
-Add a `HostRule(…)` to the appropriate list in `policies/host.py`.
-
-### Add a Custom Context
-
-Add a `ContextSpec(…)` to `_CONTEXT_TABLE` in `layers/context.py`.
-
-### Subscribe to Reload Events (v9)
-
-```python
-def _on_reload(e: Event) -> None:
-    if isinstance(e, ConfigReloadedEvent):
-        logger.info("Reloaded: %d changes in %.1fms", e.changes_count, e.duration_ms)
-
-router.events.subscribe(ConfigReloadedEvent, _on_reload)
+```
+config.py                   ← entry point (edit CONFIGURATION SECTION only)
+core/
+  audit.py                  ← AuditLog, AuditEntry, AuditFilter, AuditLevel  [v11]
+  health.py                 ← 18 built-in health checks
+  incremental.py            ← delta-only hot-reload
+  layer.py                  ← LayerProtocol, LayerStack, BaseConfigLayer
+  lifecycle.py              ← LifecycleManager, LifecycleHook enum
+  pipeline.py               ← ConfigPacket, PipeStage, Pipeline + v11 stages
+  protocol.py               ← EventBus, CommandBus, QueryBus, typed messages
+  state.py                  ← ConfigStateMachine, TRANSITIONS table
+  strategy.py               ← Policy, PolicyChain, StrategyRegistry
+  types.py                  ← ConfigDict, Keybind (zero-dep primitives)
+layers/
+  appearance.py  [p=30]     ← themes, fonts, colors
+  base.py        [p=10]     ← foundational defaults, search engines
+  behavior.py    [p=40]     ← UX, keybindings, per-host rules
+  context.py     [p=45]     ← situational mode (work/research/media/dev/…)
+  performance.py [p=50]     ← cache & rendering
+  privacy.py     [p=20]     ← security & tracking protection
+  session.py     [p=55]     ← time-aware session (day/evening/night/…)  [v11]
+  user.py        [p=90]     ← personal overrides
+policies/
+  content.py                ← content blocking policies
+  host.py                   ← per-host exception rules
+  network.py                ← network policies
+  security.py               ← security policies
+strategies/
+  download.py               ← download dispatcher selection
+  merge.py                  ← merge algorithm strategies
+  profile.py                ← unified profile resolution
+  search.py                 ← search engine set strategies
+themes/
+  extended.py               ← 14+ additional color schemes
+keybindings/
+  catalog.py                ← conflict detection, reference tables
+scripts/
+  context_switch.py         ← ,C* runtime context switching
+  session_switch.py         ← ,S* runtime session switching  [v11]
+  diagnostics.py            ← CLI diagnostic tool             [v11]
+  gen_keybindings.py        ← auto-generate KEYBINDINGS.md
+  open_with.py              ← xdg-open integration
+  password.py               ← pass/bitwarden fill
+  readability.py            ← reader mode
+  search_sel.py             ← search selected text
+  tab_restore.py            ← session tab restore
+tests/
+  test_architecture.py      ← layer/stack/orchestrator integration
+  test_extensions.py        ← strategies, policies, themes, catalog
+  test_health.py            ← all 18 health checks
+  test_incremental.py       ← ConfigDiffer, IncrementalApplier
+  test_v10.py               ← v10 fixes (LayerStack._layers, etc.)
+  test_v11.py               ← v11 additions (audit, session, pipeline) [v11]
 ```
 
-### Introspect via QueryBus (v9)
+---
 
-```python
-snap = router.ask(GetSnapshotQuery(label="pre-reload"))
-diff = router.ask(GetLayerDiffQuery(label_a="pre-reload", label_b="post-reload"))
-names = router.ask(GetLayerNamesQuery())
+## Running Tests
+
+```bash
+# All tests
+python3 -m pytest tests/ -v
+
+# Specific suite
+python3 tests/test_v11.py        # v11 additions
+python3 tests/test_health.py     # health checks
+python3 tests/test_architecture.py
+
+# Quick smoke test
+python3 scripts/diagnostics.py health
 ```
+
+---
+
+## Version History
+
+| Version | Highlights                                                                                                                                                                             |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v12     | `core/metrics.py` (MetricsCollector/PhaseTimer), pipeline TeeStage/RetryStage/CompositeStage, orchestrator audit_trail()/metrics_summary(), SRP: telemetry extracted from orchestrator |
+| v11     | SessionLayer (p=55), AuditLog, pipeline ReduceStage/BranchStage/CacheStage/AuditStage, diagnostics.py CLI, config.py ACTIVE_SESSION                                                    |
+| v10     | `core/types.py` (zero-dep primitives), `LayerStack._layers` fix, `core/__init__.py` full exports, conftest.py                                                                          |
+| v9      | Incremental reload, event system v2, health checks v2, QueryBus introspection                                                                                                          |
+| v8      | Extended themes (nord, dracula, glass…), SessionStore, font overrides                                                                                                                  |
+| v7      | `HOST_POLICY_DEV` fix, BehaviorLayer deduplication, keybinding catalog                                                                                                                 |
+| v6      | ContextLayer (work/research/media/dev/writing), context_switch.py                                                                                                                      |

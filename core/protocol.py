@@ -319,6 +319,16 @@ class GetLayerNamesQuery(Query):
     """
     pass
 
+@dataclass(frozen=True)
+class GetMetricsSummaryQuery(Query):
+    """
+    Request a formatted metrics summary string from the orchestrator.
+
+    Returns: str — human-readable table of recent MetricsSample records.
+    Added in v12.
+    """
+    last_n: int = 20
+
 
 # ─────────────────────────────────────────────
 # Bus Handler Types

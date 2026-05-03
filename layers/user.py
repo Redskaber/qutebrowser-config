@@ -81,9 +81,8 @@ from __future__ import annotations
 import logging
 from typing import List, Optional, FrozenSet
 
-from core.types import ConfigDict
+from core.types import ConfigDict, Keybind
 from core.layer import BaseConfigLayer
-from keybindings.catalog import Keybind
 
 
 logger = logging.getLogger("qute.layers.user")

@@ -44,9 +44,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
-from core.types import ConfigDict
+from core.types import ConfigDict, Keybind
 from core.layer import BaseConfigLayer
-from keybindings.catalog import Keybind
 
 
 # ─────────────────────────────────────────────

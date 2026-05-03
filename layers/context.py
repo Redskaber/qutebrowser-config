@@ -58,9 +58,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from core.types import ConfigDict
+from core.types import ConfigDict, Keybind
 from core.layer import BaseConfigLayer
-from keybindings.catalog import Keybind
 
 EngineMap   = Dict[str, str]
 

@@ -1,31 +1,28 @@
-# Extending the Configuration
+# Extending the Configuration (v11)
 
 This guide covers every extension point in the architecture.
-You should read [ARCHITECTURE.md](ARCHITECTURE.md) first.
+Read [ARCHITECTURE.md](ARCHITECTURE.md) first.
 
 ---
 
 ## Adding a New Layer
 
-Layers are the primary extension mechanism. Create a new file in `layers/`.
+Layers are the primary extension mechanism.
 
 ```python
 # layers/workspace.py
 """
-layers/workspace.py
-===================
-Workspace Layer — project-specific browser environments
-
-Priority: 45 (between behavior[40] and performance[50])
+layers/workspace.py  —  Workspace Layer  (priority 60)
 """
 from __future__ import annotations
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 from core.layer import BaseConfigLayer, ConfigDict
+from core.types import Keybind
 
 
 class WorkspaceLayer(BaseConfigLayer):
     name        = "workspace"
-    priority    = 45
+    priority    = 60
     description = "Project-specific search engines and keybindings"
 
     def __init__(self, leader: str = ",", workspace: str = "default") -> None:
@@ -38,17 +35,14 @@ class WorkspaceLayer(BaseConfigLayer):
                 "url.searchengines": {
                     "DEFAULT": "https://jira.mycompany.com/issues/?jql=text+~+{}",
                     "jira":    "https://jira.mycompany.com/issues/?jql=text+~+{}",
-                    "conf":    "https://confluence.mycompany.com/dosearchsite.action?queryString={}",
                 },
             }
-        return {}  # default workspace: no overrides
+        return {}
 
-    def _keybindings(self) -> List[Tuple[str, str, str]]:
+    def _keybindings(self) -> List[Keybind]:
         L = self._leader
         if self._workspace == "work":
-            return [
-                (f"{L}J", "open https://jira.mycompany.com", "normal"),
-            ]
+            return [(f"{L}J", "open https://jira.mycompany.com", "normal")]
         return []
 ```
 
@@ -61,19 +55,79 @@ from layers.workspace import WorkspaceLayer
 if LAYERS.get("workspace"):
     stack.register(WorkspaceLayer(leader=LEADER_KEY, workspace="work"))
 
-# Also add to LAYERS dict:
 LAYERS: dict[str, bool] = {
-    ...
+    ...,
     "workspace": True,
 }
 ```
 
 **Rules for layer authors:**
 
-- `build()` must be **pure** — no `config.set()` calls, no I/O.
+- `build()` must be **pure** — no `config.set()`, no I/O.
 - Never import from another `layers/*` module.
-- Always honour the `leader` parameter for keybindings.
-- Priority 60–80 is reserved for user-added layers between performance and user.
+- Always honour the `leader` parameter.
+- Priority 60–80 is the recommended range for custom layers.
+
+---
+
+## Adding a Session Mode (v11)
+
+A session mode is a time/situation spec that adjusts zoom, fonts, and chrome.
+
+```python
+# In layers/session.py — extend _SESSION_TABLE:
+
+# 1. Add to SessionMode enum:
+class SessionMode(str, Enum):
+    ...
+    READING = "reading"   # new
+
+# 2. Add a SessionSpec to _SESSION_TABLE:
+_SESSION_TABLE[SessionMode.READING] = SessionSpec(
+    mode        = SessionMode.READING,
+    description = "Reading — large font, distraction-free",
+    settings_delta = {
+        "content.autoplay":              False,
+        "content.notifications.enabled": False,
+        "statusbar.show":                "in-mode",
+        "tabs.show":                     "multiple",
+        "fonts.web.size.default":        22,
+        "zoom.default":                  "115%",
+    },
+    zoom_hint = "115%",
+)
+
+# 3. Add keybinding in _keybindings():
+#    (f"{L}Sr", "spawn --userscript session_switch.py reading", "normal"),
+
+# 4. Add to session_switch.py VALID_SESSIONS:
+VALID_SESSIONS = {..., "reading"}
+```
+
+---
+
+## Adding a Context Mode
+
+Add a `ContextSpec(…)` to `_CONTEXT_TABLE` in `layers/context.py`:
+
+```python
+ContextMode.SCIENCE: ContextSpec(
+    mode        = ContextMode.SCIENCE,
+    description = "Science — arXiv, PubMed, NCBI, element searches",
+    search_engines = {
+        "DEFAULT": "https://pubmed.ncbi.nlm.nih.gov/?term={}",
+        "arxiv":   "https://arxiv.org/search/?searchtype=all&query={}",
+        "ncbi":    "https://www.ncbi.nlm.nih.gov/search/research-articles/?term={}",
+        "elem":    "https://ptable.com/#Properties/{}",
+    },
+    settings_delta = {
+        "content.autoplay":              False,
+        "content.notifications.enabled": False,
+    },
+),
+```
+
+Also add to `ContextMode` enum and register the `,Cs` keybinding.
 
 ---
 
@@ -94,121 +148,150 @@ LAYERS: dict[str, bool] = {
 ),
 ```
 
-Then in `config.py`:
-
-```python
-THEME = "my-theme"
-```
-
-The theme is automatically available after `register_all_themes()` is called.
+Then in `config.py`: `THEME = "my-theme"`.
 
 ---
 
-## Adding a Per-Host Exception
+## Adding a Pipeline Stage (v11)
 
-Per-host rules belong in `policies/host.py`, not in `layers/behavior.py`.
-The behavior layer's `host_policies()` method is the _legacy_ path; the
-`HostPolicyRegistry` is the preferred structured approach.
+### Simple transform
 
 ```python
-# policies/host.py — add to the appropriate rule set, or create a new one:
+from core.pipeline import TransformStage
 
-MY_RULES: List[HostRule] = [
-    HostRule(
-        pattern="*.mycompany.com",
-        settings={
-            "content.cookies.accept":     "all",
-            "content.javascript.enabled": True,
-        },
-        description="Internal company tools need cookies + JS",
-        category="work",
-    ),
-]
+# Prefix all setting keys with a namespace (for debugging)
+NamespacePrefixStage = TransformStage(
+    fn    = lambda d: {f"ns:{k}": v for k, v in d.items()},
+    label = "namespace-prefix",
+)
 ```
 
-Register in `build_default_host_registry()` or in `config.py`:
+### Reduce stage (aggregate)
 
 ```python
-# config.py wiring section:
-from policies.host import build_default_host_registry, HostRule
+from core.pipeline import ReduceStage
 
-host_registry = build_default_host_registry()
-host_registry.register(HostRule(
-    pattern="*.mycompany.com",
-    settings={"content.cookies.accept": "all"},
-    category="work",
-    description="Company intranet",
-))
+# Count bool-valued settings
+BoolCountStage = ReduceStage(
+    reducer    = lambda acc, k, v: acc + (1 if isinstance(v, bool) else 0),
+    initial    = 0,
+    result_key = "bool_key_count",
+    label      = "bool-counter",
+)
 ```
 
----
-
-## Adding a Pipeline Stage
+### Branch stage (conditional)
 
 ```python
-# core/pipeline.py or inline in your layer:
+from core.pipeline import BranchStage, Pipeline, TransformStage
 
-from core.pipeline import PipeStage, ConfigPacket
+# Only apply hardening transform in PARANOID mode
+harden_pipeline = Pipeline("harden").pipe(
+    TransformStage(lambda d: {**d, "content.javascript.enabled": False}, "js-off")
+)
 
-class ExpandTildeStage(PipeStage):
-    """Expand ~ in string values to the home directory."""
-    name = "expand_tilde"
-
-    def process(self, packet: ConfigPacket) -> ConfigPacket:
-        import os
-        settings = packet.data.get("settings", {})
-        expanded = {
-            k: os.path.expanduser(v) if isinstance(v, str) else v
-            for k, v in settings.items()
-        }
-        return packet.replace_data({**packet.data, "settings": expanded})
+HardenBranchStage = BranchStage(
+    predicate    = lambda p: p.meta.get("privacy_profile") == "PARANOID",
+    true_branch  = harden_pipeline,
+    false_branch = None,  # pass-through otherwise
+    label        = "paranoid-harden",
+)
 ```
 
-Use in a layer:
+### Cache stage (memoize)
 
 ```python
-def pipeline(self) -> Pipeline:
-    from core.pipeline import LogStage, Pipeline
-    return Pipeline([LogStage(), ExpandTildeStage()])
+from core.pipeline import CacheStage, TransformStage
+
+# Cache an expensive transform across hot-reloads
+cached_stage = CacheStage(
+    inner = TransformStage(expensive_fn, "slow"),
+    label = "slow-cache",
+)
+# Reset on manual config change:
+cached_stage.invalidate()
+```
+
+### Compose stages with `+`
+
+```python
+from core.pipeline import LogStage, ValidateStage
+
+# Two-stage mini-pipeline:
+combined = LogStage("pre") + ValidateStage({"content.blocking.enabled": lambda v: isinstance(v, bool)})
+result = combined.run(packet)
 ```
 
 ---
 
-## Adding a Search Engine Set
+## Using the Audit System (v11)
+
+### Record from any component
 
 ```python
-# strategies/search.py — add a new strategy class:
+from core.audit import audit_info, audit_warn, audit_error, get_audit_log
 
-class WorkSearchStrategy(Strategy[SearchEngineMap]):
-    """Company-internal search."""
-    name = "work"
+# In a lifecycle hook:
+audit_info("my-hook", "POST_APPLY hook ran", key_count=87)
 
-    def apply(self, context: ConfigDict) -> SearchEngineMap:
-        return {
-            **_BASE_ENGINES,
-            "DEFAULT": "https://jira.mycompany.com/issues/?jql=text+~+{}",
-            "jira":    "https://jira.mycompany.com/issues/?jql=text+~+{}",
-        }
+# In a custom health check:
+if bad_condition:
+    audit_warn("my-check", "suspicious value detected", key="content.proxy", val=v)
 ```
 
-Register it:
+### Query the log
 
 ```python
-def build_search_registry() -> StrategyRegistry[SearchEngineMap]:
-    registry = ...
-    registry.register(WorkSearchStrategy())
-    return registry
+from core.audit import get_audit_log, AuditFilter, AuditLevel
+
+log = get_audit_log()
+
+# All entries
+all_entries = log.query()
+
+# Only WARN and above
+issues = log.query(AuditFilter.errors_and_warnings())
+
+# Only orchestrator entries since seq=50
+recent = log.query(AuditFilter(component="orchestrator", since_seq=50))
+
+# Last 10 entries
+last10 = log.last_n(10)
+
+# Export
+print(log.export_text())
+print(log.export_json())
+print(log.export_markdown())
 ```
 
-Use in `layers/user.py`:
+### Add an AuditStage to a pipeline
 
 ```python
-from strategies.search import build_search_registry
+from core.pipeline import Pipeline, AuditStage, ValidateStage
 
-def _settings(self) -> ConfigDict:
-    search = build_search_registry()
-    engines = search.apply("work", {})
-    return {"url.searchengines": engines}
+Pipeline("privacy")
+.pipe(AuditStage("pre", component="privacy"))
+.pipe(ValidateStage({...}))
+.pipe(AuditStage("post", component="privacy"))
+```
+
+---
+
+## Adding a Per-Host Rule
+
+Add a `HostRule(…)` to the appropriate list in `policies/host.py`:
+
+```python
+HostRule(
+    pattern     = "*.mycompany.com",
+    settings    = {
+        "content.javascript.enabled": True,
+        "content.cookies.accept":     "all",
+    },
+    description = "Corporate intranet — JS + cookies required",
+    category    = "work",
+    enabled     = True,
+)
 ```
 
 ---
@@ -216,13 +299,14 @@ def _settings(self) -> ConfigDict:
 ## Adding a Lifecycle Hook
 
 ```python
-# config.py wiring section:
+from core.lifecycle import LifecycleHook
 
-@lifecycle.on(LifecycleHook.POST_APPLY)
+@lifecycle.decorator(LifecycleHook.POST_APPLY, priority=50)
 def _on_config_applied() -> None:
-    logger.info("Config fully applied — browser is ready")
-    # e.g. emit a custom event, write a timestamp file, etc.
-_ = _on_config_applied  # suppress Pyright's reportUnusedFunction
+    # emit a custom event, write a timestamp file, etc.
+    pass
+
+_ = _on_config_applied  # suppress Pyright reportUnusedFunction
 ```
 
 Available hooks (in order):
@@ -234,20 +318,73 @@ PRE_RELOAD → POST_RELOAD → ON_ERROR → ON_TEARDOWN
 
 ---
 
+## Overriding Fonts (v8+)
+
+Use the `USER_FONT_*` variables in `config.py`:
+
+```python
+USER_FONT_FAMILY  = "Iosevka Term"   # or None
+USER_FONT_SIZE    = "10pt"           # UI chrome (Qt string)
+USER_FONT_SIZE_WEB = "16px"          # web content (int pixels)
+```
+
+**Note (v11):** `SessionLayer` (p=55) also sets `fonts.web.size.default` for evening/night/present modes.
+`UserLayer` (p=90) always wins — `USER_FONT_SIZE_WEB` overrides session values.
+
+---
+
+## Adding a Search Strategy
+
+```python
+# strategies/search.py — add to build_search_registry():
+
+class AcademiaSearchStrategy(Strategy[SearchEngineMap]):
+    name = "academia"
+    def apply(self, context: ConfigDict) -> SearchEngineMap:
+        return {**_BASE_ENGINES, **_ACADEMIA_EXTRAS}
+
+registry.register(AcademiaSearchStrategy())
+```
+
+---
+
+## Adding a Health Check
+
+```python
+from core.health import HealthCheck, HealthIssue, Severity
+
+class MyCheck(HealthCheck):
+    @property
+    def name(self) -> str:
+        return "my_check"
+
+    def run(self, settings: dict, report: HealthReport) -> None:
+        if settings.get("my.key") == "bad":
+            report.add(self._error("my.key must not be 'bad'"))
+
+# Inject for one run:
+checker = HealthChecker.default().add(MyCheck())
+
+# Or compose a targeted checker:
+checker = HealthChecker.with_checks(MyCheck())
+```
+
+---
+
 ## Adding a Policy
 
 ```python
-# policies/content.py (or a new file):
+from core.strategy import Policy, PolicyDecision, PolicyAction, PolicyChain
+from layers.privacy import PrivacyProfile
 
 class ImageBlockPolicy(Policy):
-    """PARANOID: block image loading."""
     name = "image_block_policy"
     priority = 40
 
     def __init__(self, profile: PrivacyProfile) -> None:
         self._profile = profile
 
-    def evaluate(self, key: str, value: Any, context: ConfigDict) -> Optional[PolicyDecision]:
+    def evaluate(self, key, value, context):
         if key != "content.images":
             return None
         if self._profile == PrivacyProfile.PARANOID and value is True:
@@ -259,121 +396,158 @@ class ImageBlockPolicy(Policy):
         return None
 ```
 
-Add to the factory:
+---
+
+## CLI Diagnostics Reference (v11)
+
+```bash
+# Full report (default)
+python3 scripts/diagnostics.py
+
+# Individual commands
+python3 scripts/diagnostics.py layers      # layer stack summary
+python3 scripts/diagnostics.py health      # run all health checks
+python3 scripts/diagnostics.py audit       # audit log (INFO+)
+python3 scripts/diagnostics.py audit --verbose  # include DEBUG
+python3 scripts/diagnostics.py contexts    # context table
+python3 scripts/diagnostics.py sessions    # session table
+python3 scripts/diagnostics.py themes      # available themes
+python3 scripts/diagnostics.py keybindings # full reference
+
+# Options
+--context   CONTEXT   activate context for inspection
+--session   SESSION   activate session for inspection
+--theme     THEME     theme (default: glass)
+--leader    KEY       leader key (default: ,)
+--format    FORMAT    text | json | markdown
+--out       FILE      write to file instead of stdout
+
+# Example: markdown health report for CI
+python3 scripts/diagnostics.py health \
+    --format markdown \
+    --out docs/health-report.md
+```
+
+---
+
+## Using the Metrics System (v12)
+
+`core/metrics.py` provides the dedicated telemetry module.
+
+### Standalone usage
 
 ```python
-def build_content_policy_chain(profile: PrivacyProfile) -> PolicyChain:
-    chain = PolicyChain()
+from core.metrics import MetricsCollector, PhaseTimer, metrics_time
+
+collector = MetricsCollector(capacity=64)
+
+# Time a block with context manager
+with metrics_time() as t:
+    ...expensive work...
+collector.emit("my_phase", t.elapsed_ms, key_count=42)
+
+# Or with explicit PhaseTimer
+timer = PhaseTimer()
+with timer:
     ...
-    chain.add(ImageBlockPolicy(profile))
-    return chain
+collector.emit("another_phase", timer.elapsed_ms)
+
+# Query
+sample = collector.get("my_phase")     # latest
+last5  = collector.last_n(5)
+totals = collector.totals_by_phase()   # cumulative ms by phase
+print(collector.summary())
+```
+
+### Wiring to MessageRouter
+
+```python
+collector.on_emit(
+    lambda ph, ms, n: router.emit_metrics(phase=ph, duration_ms=ms, key_count=n)
+)
+```
+
+Every `collector.emit()` call now also fires `MetricsEvent` to all existing subscribers.
+
+### Accessing orchestrator metrics
+
+```python
+# Direct call
+print(orchestrator.metrics_summary(last_n=10))
+
+# Via QueryBus
+summary = router.ask(GetMetricsSummaryQuery())
+```
+
+### Module singleton
+
+```python
+from core.metrics import get_metrics_collector, reset_metrics_collector
+
+# Global singleton (shared across code that imports it)
+c = get_metrics_collector()
+
+# Reset in tests
+c = reset_metrics_collector()
 ```
 
 ---
 
-## Overriding Fonts (v8+)
+## Using Pipeline v12 Stages
 
-The simplest way to change fonts is via the three `USER_FONT_*` variables in `config.py`. No need to touch `layers/user.py` or `extra_settings`:
+### TeeStage — probe without mutating
 
 ```python
-# config.py — USER PREFERENCE SECTION
+from core.pipeline import TeeStage, Pipeline, AuditStage, MergeStage
 
-# Font family applied to all qutebrowser UI chrome (completion, statusbar, tabs…)
-USER_FONT_FAMILY  = "Iosevka Term"          # or None to keep theme default
-
-# UI chrome font size (passed as a Qt size string like "10pt")
-USER_FONT_SIZE    = "10pt"                  # or None
-
-# Web content default font size in pixels ("16px", "18px", or plain "16")
-# → maps to fonts.web.size.default (int)
-USER_FONT_SIZE_WEB = "16px"                 # or None
+# Insert an audit probe mid-pipeline without affecting data flow
+pipeline = (
+    Pipeline("with-probe")
+    .pipe(MergeStage({"key": "value"}))
+    .pipe(TeeStage(AuditStage("mid"), label="mid-audit"))
+    .pipe(MergeStage({"other": "value"}))
+)
 ```
 
-These are wired via `UserLayer` at priority 90 and override whatever `AppearanceLayer` (priority 30) set from the theme's `ColorScheme`.
+Observer exceptions are caught and logged; the main packet always continues.
 
-**Why separate `font_size` and `font_size_web`?**
-
-| Variable             | qutebrowser key          | Unit                 | Controls                                |
-| -------------------- | ------------------------ | -------------------- | --------------------------------------- |
-| `USER_FONT_SIZE`     | `fonts.default_size`     | Qt string (`"10pt"`) | UI chrome (tabs, statusbar, completion) |
-| `USER_FONT_SIZE_WEB` | `fonts.web.size.default` | integer (pixels)     | Default size for web page body text     |
-
-They are independent — you can have a compact `"9pt"` UI font while keeping web pages at `18` pixels for readability.
-
----
-
-## Adding a Custom Context (v8+)
-
-Contexts live entirely in `layers/context.py` — no other file needs changing:
+### RetryStage — resilient idempotent stages
 
 ```python
-# layers/context.py — add to ContextMode enum:
-class ContextMode(str, Enum):
+from core.pipeline import RetryStage, TransformStage
+
+def fetch_remote_config(data: dict) -> dict:
+    # may raise on transient network failures
     ...
-    FINANCE = "finance"
 
-# Add to _CONTEXT_TABLE:
-ContextMode.FINANCE: ContextSpec(
-    mode=ContextMode.FINANCE,
-    description="Finance mode — market data, news, portfolio tools",
-    search_engines={
-        "DEFAULT": "https://finance.yahoo.com/search?p={}",
-        "ycharts": "https://ycharts.com/search?search[term]={}",
-        "edgar":   "https://efts.sec.gov/LATEST/search-index?q={}&dateRange=custom",
-        "wsj":     "https://www.wsj.com/search?query={}",
-    },
-    settings_delta={
-        "content.autoplay":              False,
-        "content.notifications.enabled": False,
-        "tabs.show":                     "multiple",
-    },
-    bindings_extra=[],
-),
+stage = RetryStage(
+    TransformStage(fetch_remote_config, "remote-config"),
+    max_retries=3,
+    delay_s=0.05,   # 50ms between retries
+    label="remote-fetch",
+)
 ```
 
-Then add the switch binding in `_keybindings()`:
+Only use with **idempotent** stages. Each failure appends a warning to the packet.
+
+### CompositeStage — reusable pipeline fragments
 
 ```python
-(f"{L}Cf", "spawn --userscript context_switch.py finance", "normal"),
+from core.pipeline import CompositeStage, Pipeline, ValidateStage, FilterStage
+
+# Define a reusable fragment
+privacy_pipeline = (
+    Pipeline("privacy-checks")
+    .pipe(ValidateStage({"content.javascript.enabled": lambda v: isinstance(v, bool)}))
+    .pipe(FilterStage(lambda k, v: not k.startswith("debug.")))
+)
+
+# Embed as a single stage in a larger pipeline
+main = (
+    Pipeline("main")
+    .pipe(CompositeStage(privacy_pipeline, label="privacy"))
+    .pipe(MergeStage({"hardened": True}))
+)
 ```
 
-And register it in `scripts/context_switch.py`:
-
-```python
-VALID_CONTEXTS = {..., "finance"}
-_CONTEXT_LABELS["finance"] = "Finance — market data, portfolio"
-```
-
----
-
-## User-Facing Config (What Users Actually Touch)
-
-Users edit **only** the `CONFIGURATION SECTION` in `config.py`:
-
-```python
-THEME              = "catppuccin-mocha"    # any name from THEMES / extended
-PRIVACY_PROFILE    = PrivacyProfile.STANDARD
-PERFORMANCE_PROFILE= PerformanceProfile.BALANCED
-LEADER_KEY         = ","
-ACTIVE_CONTEXT     = None                  # or "work"/"dev"/"gaming"/…
-LAYERS             = {"base": True, "user": True, ...}
-
-# Font overrides (v8+)
-USER_FONT_FAMILY   = "Iosevka Term"        # or None
-USER_FONT_SIZE     = "10pt"                # or None
-USER_FONT_SIZE_WEB = "16px"               # or None
-```
-
-And optionally the `USER PREFERENCE SECTION` for personal overrides:
-
-```python
-USER_EDITOR        = ["kitty", "-e", "nvim", "{}"]
-USER_START_PAGES   = ["https://example.com"]
-USER_ZOOM          = "110%"
-USER_PROXY         = "socks5://127.0.0.1:7897"
-USER_SEARCH_ENGINES= {"gpt": "https://chatgpt.com/?{}"}
-```
-
-Everything else — `core/`, `strategies/`, `policies/`, `themes/`, `keybindings/` —
-is architecture, not configuration. Users who find themselves editing those
-files are adding features, not configuring.
+`Pipeline.describe()` shows `composite:privacy` rather than all inner stage names, keeping the output readable.
