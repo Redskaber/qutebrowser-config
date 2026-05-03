@@ -1,7 +1,7 @@
 """
 layers/behavior.py
 ==================
-Behavior Layer — UX, Workflow, Interaction Patterns  (v9)
+Behavior Layer — UX, Workflow, Interaction Patterns  (v10)
 
 Priority: 40
 
@@ -14,7 +14,14 @@ Responsibilities:
 
 Pattern: Data-Driven Configuration + Command pattern for keybindings
 
-v9 changes:
+v10 changes (bug-fix):
+  - Removed ``input.partial_timeout: 500`` override.
+    This was overriding BaseLayer's 3000 ms value and was the proximate
+    cause of the keyhint dialog flash-and-disappear bug: the sequence
+    timeout fired at 500 ms, resetting the partial key chain and
+    dismissing the hint dialog before the user could act.
+
+v9 changes (retained):
   - Hint mode keybindings: added <ctrl-r> (reload), <ctrl-f> (find),
     <ctrl-y> (yank), <space> (scroll-down), <ctrl-space> (scroll-up)
     within hint activation mode for ergonomic hint navigation.
@@ -131,7 +138,10 @@ class BehaviorLayer(BaseConfigLayer):
 
             # ── Input / escape ────────────────────────────────────────────
             "input.escape_quits_reporter": True,
-            "input.partial_timeout":       500,
+            # NOTE: input.partial_timeout is intentionally NOT set here.
+            # BaseLayer sets it to 3000 ms to allow the keyhint dialog to
+            # remain visible long enough to be useful.  Overriding it here
+            # at 500 ms was the root cause of the keyhint flash bug.
 
             # ── Completion behavior ───────────────────────────────────────
             "completion.web_history.max_items": 500,

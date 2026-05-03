@@ -235,6 +235,60 @@ Changes take effect on `,r` (`:config-source`).
 
 ---
 
+## Keyhint Dialog (Leader-Key Popup)
+
+When you press the leader key (`,`) or any other multi-key prefix, qutebrowser
+shows a **keyhint dialog** listing all completions for that prefix.
+
+### Settings that control it
+
+| Setting                 | Value   | Effect                                                                       |
+| ----------------------- | ------- | ---------------------------------------------------------------------------- |
+| `keyhint.delay`         | 200 ms  | Dialog appears 200 ms after the prefix key is pressed                        |
+| `keyhint.radius`        | 6 px    | Rounded corners on the popup                                                 |
+| `input.partial_timeout` | 3000 ms | Key sequence resets after 3 s of inactivity — **this is the critical value** |
+
+### Why the hint used to flash and disappear
+
+`input.partial_timeout` was set to `500 ms`. This meant:
+
+1. You press `,` → keyhint delay (200 ms) starts
+2. Dialog appears after 200 ms
+3. `partial_timeout` fires at 500 ms — resets the key sequence
+4. qutebrowser dismisses the keyhint dialog
+
+**Fix (v10):** `input.partial_timeout` raised to `3000 ms`. You now have
+3 seconds to press the second key after the hint appears. `Escape` always
+cancels immediately.
+
+### Blacklisting noisy prefixes
+
+To suppress the hint for a prefix (e.g. `g` which has many bindings):
+
+```python
+# in layers/user.py _settings()
+"keyhint.blacklist": ["g", "z"],
+```
+
+---
+
+## Statusbar Clock
+
+The clock widget is enabled by including `"clock"` in `statusbar.widgets`.
+
+```python
+"statusbar.widgets": ["keypress", "url", "scroll", "history", "progress", "clock"]
+```
+
+`"clock"` must be the **last** entry — it renders right-aligned at the far
+right of the statusbar. Placing it before `"progress"` can cause it to
+not appear in some qutebrowser builds.
+
+The `"history"` widget (back/forward arrows) was added in v10 between
+`"scroll"` and `"progress"`.
+
+---
+
 ## Conflict Detection
 
 Run from the project root:

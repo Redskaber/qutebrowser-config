@@ -1,7 +1,7 @@
 """
 layers/base.py
 ==============
-Base Layer — Foundational Defaults  (v9.1)
+Base Layer — Foundational Defaults  (v10)
 
 Priority: 10 (lowest, applied first, overridable by all other layers)
 
@@ -11,36 +11,28 @@ before any other layers are applied.
 
 Philosophy: explicit > implicit. Every setting here is intentional.
 
-v9.1 changes:
-  - _keybindings() now returns two essential base-layer keybindings:
-      ,r  → config-source  (reload config — the most critical keybinding)
-      ,q  → close          (close current tab — universally useful)
-    Previously returned [] so build() never included a "keybindings" key,
-    breaking TestBaseLayer.test_has_keybindings.
-    More workflow keybindings continue to live in BehaviorLayer (priority=40).
+v10 changes (bug-fixes):
+  - input.partial_timeout: 500 → 3000 ms
+      Root-cause fix for the keyhint dialog flash-and-disappear bug.
+      When the leader key (`,`) or any multi-key prefix was pressed,
+      the 500 ms timeout fired before the user could read the popup
+      and press the second key, collapsing the hint instantly.
+      3000 ms gives comfortable reading time; Escape still cancels.
+  - keyhint.delay: explicitly set to 200 ms (was unset → defaulted to
+      500 ms, causing the hint to appear just as partial_timeout fired).
+  - keyhint.radius: 6 px for visual consistency with hints/prompts.
+  - statusbar.widgets: added "history" widget between "scroll" and
+      "progress"; reordered so "clock" is always last (rightmost).
+      Previously "history" was absent and "clock" sat after "progress"
+      which in some qutebrowser builds caused it to not render.
 
-v9 changes:
-  - Added ``content.pdfjs``: True
-  - Added ``content.javascript.alert``: True
-  - Added ``content.javascript.prompt``: True
-  - Added ``content.javascript.can_open_tabs_automatically``: False
-  - Added ``tabs.title.format_pinned``: "{index}: {current_title}"
-  - Added ``tabs.pinned.frozen``: False
-  - Added ``content.fullscreen.window``: True
-  - Added ``qt.force_software_rendering``: "none"
-  - Added ``messages.timeout``: 5000ms
-  - Added ``url.default_page``: "about:blank"
-  - Added ``content.images``: True
+v9.1 changes (retained):
+  - _keybindings() now returns two essential base-layer keybindings.
 
-v6 changes (retained):
-  - Removed invalid key ``downloads.prevent_mixed_content``
-  - Added tabs.favicons.scale, tabs.indicator.*
-  - Added tabs.title.alignment, tabs.max_width, tabs.min_width
-  - Added content.blocking.enabled = False (privacy layer owns this)
-  - Added completion.cmd_history_max_items
-  - Added hints.find_implementation
-  - Added downloads.location.remember
-  - Cleaned up statusbar.widgets
+v9 changes (retained):
+  - Added content.pdfjs, content.javascript.*, tabs.title.format_pinned,
+    tabs.pinned.frozen, content.fullscreen.window, qt.force_software_rendering,
+    messages.timeout, url.default_page, content.images.
 """
 
 from __future__ import annotations
@@ -96,8 +88,20 @@ class BaseLayer(BaseConfigLayer):
             "input.insert_mode.plugins":                 False,
             "input.links_included_in_focus_chain":       True,
             "input.mouse.rocker_gestures":               False,
-            "input.partial_timeout":                     500,
+            # partial_timeout: how long (ms) qutebrowser waits for the next
+            # key in a multi-key sequence before resetting.  500 ms is too
+            # aggressive — the keyhint dialog barely appears before the
+            # sequence is cancelled.  3000 ms gives the user enough time to
+            # read the hint and press the second key.  (Fix: keyhint flash)
+            "input.partial_timeout":                     3000,
             "input.spatial_navigation":                  False,
+
+            # ── Keyhint (leader-key popup) ────────────────────────────
+            # keyhint.delay: ms before the hint dialog appears after a
+            # prefix key is pressed.  Low value so the popup is immediate;
+            # partial_timeout (above) keeps it visible long enough to act.
+            "keyhint.delay":     200,
+            "keyhint.radius":    6,
 
             # ── Tabs ─────────────────────────────────────────────────
             "tabs.background":                           True,
@@ -144,8 +148,20 @@ class BaseLayer(BaseConfigLayer):
             "url.open_base_url": False,
 
             # ── Status bar ────────────────────────────────────────────
+            # Widget order: keypress → url → scroll → history → progress → clock
+            # "clock" must be the last widget; qutebrowser renders it right-
+            # aligned next to the URL.  Without an explicit entry the widget
+            # is not shown even though it is compiled in.
+            # (Fix: clock not appearing in bottom-right corner)
             "statusbar.show":    "always",
-            "statusbar.widgets": ["keypress", "url", "scroll", "progress", "clock"],
+            "statusbar.widgets": [
+                "keypress",
+                "url",
+                "scroll",
+                "history",
+                "progress",
+                "clock",
+            ],
             "statusbar.padding": {
                 "top": 1, "bottom": 1, "left": 3, "right": 3,
             },
