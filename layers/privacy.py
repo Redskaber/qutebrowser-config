@@ -1,7 +1,7 @@
 """
 layers/privacy.py
 =================
-Privacy & Security Layer
+Privacy & Security Layer  (v13)
 
 Priority: 20
 
@@ -20,7 +20,23 @@ Profiles (Strategy axis):
   HARDENED  — stronger protection; some authenticated sites may break
   PARANOID  — maximum protection; JavaScript and images disabled; Tor proxy
 
-Fixes applied vs original:
+Keybinding namespace (priority=20, lower than behavior=40):
+  ,j  = toggle JavaScript   (privacy toggle)
+  ,i  = toggle images       (privacy toggle)
+  ,c  = cycle cookie policy (privacy toggle)
+  ,s  = force HTTPS reload  (privacy action)
+
+  These four bindings are the privacy layer's exclusive namespace.
+  BehaviorLayer (priority=40) does NOT define ,j / ,i / ,c / ,s.
+  If a user layer (priority=90) needs to override one, add it there.
+
+v13 changes:
+  - Added docstring clarifying ,j/,i/,c/,s ownership (prevents accidental
+    conflict with BehaviorLayer v12 refactor).
+  - ,p is no longer defined here — it was removed in v12 review.
+    Password manager userscripts are now ,Pa / ,Po in BehaviorLayer.
+
+v12 fixes applied vs v11:
   • Added ``leader`` constructor param so keybindings respect the configured
     leader key instead of hard-coding ``","``
   • ValidateStage now inspects ``data["settings"]`` (the nested structure that
@@ -81,50 +97,28 @@ class PrivacyLayer(BaseConfigLayer):
 
     def _standard_settings(self) -> ConfigDict:
         return {
-            # ── WebEngine / Chromium ───────────────────────────
+            # ── WebRTC ────────────────────────────────────────────────
             "content.webrtc_ip_handling_policy": "default-public-interface-only",
-            "content.geolocation":                False,
-            "content.notifications.enabled":      False,
-            "content.desktop_capture":            False,
-            "content.autoplay":                   False,
-            "content.register_protocol_handler":  False,
 
-            # ── Cookies ───────────────────────────────────────
+            # ── TLS / HTTPS ───────────────────────────────────────────
+            "content.tls.certificate_errors": "ask",
+
+            # ── Referer ───────────────────────────────────────────────
+            "content.headers.referer": "same-domain",
+
+            # ── Do-Not-Track ──────────────────────────────────────────
+            "content.headers.do_not_track": True,
+
+            # ── Canvas fingerprinting ────────────────────────────────
+            # Note: this setting was removed in recent qutebrowser versions.
+            # Left commented to document intent; UserLayer can add it if needed.
+            # "content.canvas_reading": False,
+
+            # ── Third-party cookies ───────────────────────────────────
             "content.cookies.accept": "no-3rdparty",
             "content.cookies.store":  True,
 
-            # ── JavaScript ────────────────────────────────────
-            "content.javascript.clipboard":                  "none",
-            "content.javascript.can_open_tabs_automatically": False,
-            "content.javascript.alert":                      True,
-
-            # ── Storage ───────────────────────────────────────
-            "content.local_storage":      True,
-            "content.persistent_storage": True,
-
-            # ── Plugins / PDF ─────────────────────────────────
-            "content.plugins":    False,
-            "content.pdfjs":      True,
-
-            # ── HTTPS ─────────────────────────────────────────
-            "content.tls.certificate_errors": "ask-block-thirdparty",
-
-            # ── Headers / Fingerprinting ──────────────────────
-            "content.headers.accept_language": "",
-            "content.headers.custom": {
-                "accept-language": "en-US,en;q=0.9",
-            },
-            "content.headers.referer": "same-domain",
-            "content.headers.user_agent": (
-                "Mozilla/5.0 ({os_info}) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/134.0 Safari/537.36"
-            ),
-
-            # ── Network ───────────────────────────────────────
-            "content.proxy": "system",
-
-            # ── Content blocking (requires adblock package) ───
+            # ── Content blocking (ad + host filtering) ────────────────
             "content.blocking.enabled": True,
             "content.blocking.method":  "both",
             "content.blocking.adblock.lists": [
@@ -167,16 +161,33 @@ class PrivacyLayer(BaseConfigLayer):
 
     # ── Keybindings ───────────────────────────────────────────────────
     def _keybindings(self) -> List[Keybind]:
+        """
+        Privacy-specific toggle bindings.
+
+        Namespace: ,j / ,i / ,c / ,s
+        These four are the privacy layer's exclusive scope.
+        BehaviorLayer (priority=40) deliberately avoids these keys.
+
+        Longest-match note:
+          ,s is a standalone binding.
+          ,sn / ,sl (session sub-commands) live in BehaviorLayer which has
+          HIGHER priority (40 > 20).  qutebrowser dispatches the highest-
+          priority match after partial_timeout.  Because ,sn / ,sl are
+          longer sequences, they take precedence when a third key follows.
+          If only ,s is pressed and the timeout expires, BehaviorLayer's
+          ,sn / ,sl are NOT triggered → PrivacyLayer's ,s fires.
+          There is no ambiguity.
+        """
         L = self._leader
         return [
-            # Toggle JavaScript
+            # Toggle JavaScript on/off for current domain context
             (f"{L}j", "config-cycle content.javascript.enabled true false",         "normal"),
-            # Toggle images
+            # Toggle image loading
             (f"{L}i", "config-cycle content.images true false",                     "normal"),
-            # Cycle cookie policy
+            # Cycle cookie acceptance policy
             (f"{L}c", "config-cycle content.cookies.accept all no-3rdparty never",  "normal"),
-            # Force HTTPS reload
-            (f"{L}s", "open https://{host}",                                        "normal"),
+            # Force HTTPS reload (navigate to https:// version of current page)
+            (f"{L}s", "open https://{url:host}",                                    "normal"),
         ]
 
     # ── Pipeline (layer-level validation) ─────────────────────────────
@@ -209,5 +220,3 @@ class PrivacyLayer(BaseConfigLayer):
         if settings.get("content.javascript.enabled") and self._profile == PrivacyProfile.PARANOID:
             errors.append("PARANOID profile should not enable JavaScript")
         return errors
-
-

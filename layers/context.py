@@ -1,19 +1,30 @@
 """
 layers/context.py
 =================
-Context Layer — Situational Browser Modes
+Context Layer — Situational Browser Modes  (v9)
 
-Priority: 45  (between behavior[40] and performance[50])
+Priority: 45  (between behavior[40] and user[90])
 
 A "context" is a named situation with its own search engines, keybindings,
 and behavioral overrides.  Switching contexts is a single-key action:
-  ,Cw  → work   (Jira, Confluence, corporate search)
-  ,Cr  → research (arXiv, Scholar, Wikipedia-heavy, no distractions)
-  ,Cm  → media  (YouTube, Bilibili, autoplay on)
-  ,Cd  → dev    (GitHub, npm, MDN, crates, DevDocs)
-  ,Cg  → gaming (Steam, Twitch, GoG, ProtonDB, AreWeGameYet)   [v8]
-  ,C0  → reset  (return to default / base context)
+  ,Cw  → work      (Jira, Confluence, corporate search)
+  ,Cr  → research  (arXiv, Scholar, Wikipedia-heavy, no distractions)
+  ,Cm  → media     (YouTube, Bilibili, Twitch; autoplay on)
+  ,Cd  → dev       (GitHub, npm, MDN, crates, DevDocs)
+  ,Cwt → writing   (Dict, Thesaurus, Grammarly, focus mode)
+  ,Cg  → gaming    (Steam, Twitch, GoG, ProtonDB, AreWeGameYet)
+  ,C0  → reset     (return to default / base context)
   ,Ci  → show active context in message bar
+
+Longest-match guarantee (,Cw vs ,Cwt):
+  Both `,Cw` (work) and `,Cwt` (writing) are registered.
+  qutebrowser waits up to input.partial_timeout (3000 ms, set in BaseLayer)
+  after the user presses `,Cw`.  If a `t` follows within that window,
+  `,Cwt` fires (writing context).  If the timeout expires, `,Cw` fires
+  (work context).  This is native qutebrowser partial-key behaviour.
+
+  No special code is needed — the disambiguation is handled by the engine.
+  The 3000 ms timeout (BaseLayer v10 fix) is the critical enabler.
 
 Design:
   ContextMode (enum)  — named contexts
@@ -30,24 +41,31 @@ Architecture integration:
     which writes to the .context file and sends :config-source.
   - No qutebrowser restart is needed.
 
+Keybinding namespace:
+  All bindings use the `,C` prefix (two-char prefix after leader).
+  This prefix is exclusively owned by ContextLayer.
+  BehaviorLayer and PrivacyLayer do NOT use `,C*`.
+
 Patterns: Strategy (context as spec), Data-Driven, State (active context).
 
 Strict-mode: all attrs typed; ContextSpec is frozen dataclass.
 
-v8 changes:
-  - Added GAMING context: Steam, Twitch, ProtonDB, AreWeGameYet search;
-    autoplay ON; notifications OFF; fullscreen-on-request enabled.
-  - Updated ,Cg keybinding for gaming context switching.
-  - ContextMode members sorted by priority-of-use for readability.
+v9 changes:
+  - Documented longest-match guarantee for ,Cw / ,Cwt.
+  - All bindings consolidated into switch_bindings list with comments.
+  - ,C namespace ownership explicitly documented.
+  - Removed stale v8 changelog (retained relevant notes inline).
+
+v8 changes (retained):
+  - Added GAMING context with Steam/Twitch/ProtonDB/AreWeGameYet search.
+  - ContextMode members sorted by priority-of-use.
 
 v6 changes (retained):
-  - _resolve_active_mode now reads ~/.config/qutebrowser/.context file
-    (previously only env var + constructor param were checked — file was
-    written by context_switch.py but never read back)
-  - Added WRITING context (focus / reference / no distractions)
-  - Added ,Cwt binding for writing context
-  - ContextSpec.bindings_extra uses proper List[Tuple[str,str,str]] type
-  - _CONTEXT_FILE_ENV for override (useful in tests / NixOS)
+  - _resolve_active_mode reads ~/.config/qutebrowser/.context file.
+  - Added WRITING context (focus / reference / no distractions).
+  - Added ,Cwt binding for writing context.
+  - ContextSpec.bindings_extra uses proper List[Tuple[str,str,str]] type.
+  - _CONTEXT_FILE_ENV for override (useful in tests / NixOS).
 """
 
 from __future__ import annotations
@@ -209,12 +227,12 @@ _CONTEXT_TABLE: Dict[ContextMode, ContextSpec] = {
 
     ContextMode.WRITING: ContextSpec(
         mode=ContextMode.WRITING,
-        description="Writing mode — focus, reference tools, minimal UI",
+        description="Writing mode — reference, dictionary, focus",
         search_engines={
-            "DEFAULT": "https://search.brave.com/search?q={}",
+            "DEFAULT": "https://www.google.com/search?q={}",
             "dict":    "https://www.merriam-webster.com/dictionary/{}",
             "thes":    "https://www.thesaurus.com/browse/{}",
-            "gram":    "https://www.grammarly.com/blog/?s={}",
+            "gram":    "https://app.grammarly.com/",
             "wiki":    "https://en.wikipedia.org/w/index.php?search={}",
         },
         settings_delta={
@@ -335,11 +353,17 @@ class ContextLayer(BaseConfigLayer):
         leader:        Leader key prefix (default ",").
         base_engines:  Engines already established by lower layers.
                        ContextLayer *merges* its engine delta on top.
+
+    Keybinding ownership:
+        All `,C*` bindings are exclusively owned here.
+        `,Cw` (work) and `,Cwt` (writing) share the prefix `,Cw` —
+        the longest-match rule handles disambiguation via partial_timeout.
+        See module docstring for full explanation.
     """
 
     name        = "context"
     priority    = 45
-    description = "Situational context — work / research / media / dev / writing"
+    description = "Situational context — work / research / media / dev / writing / gaming"
 
     def __init__(
         self,
@@ -388,16 +412,28 @@ class ContextLayer(BaseConfigLayer):
         L = self._leader
 
         # ── Context switching bindings (always registered) ─────────────
-        switch_bindings = [
-            # ,C prefix = Context switch
+        #
+        # LONGEST-MATCH TABLE:
+        #   ,Cd   dev       (no sub-sequences)
+        #   ,Cw   work      ← prefix shared with ,Cwt
+        #   ,Cwt  writing   ← longer; fires when 't' follows ,Cw
+        #   ,Cr   research  (no sub-sequences)
+        #   ,Cm   media     (no sub-sequences)
+        #   ,Cg   gaming    (no sub-sequences)
+        #   ,C0   default   (digit, unambiguous)
+        #   ,Ci   info      (no sub-sequences)
+        #
+        # qutebrowser resolves this natively: after ,Cw it waits
+        # partial_timeout (3000ms); 't' → ,Cwt; timeout → ,Cw.
+        switch_bindings: List[Keybind] = [
             (f"{L}Cd",  "spawn --userscript context_switch.py dev",      "normal"),
             (f"{L}Cw",  "spawn --userscript context_switch.py work",     "normal"),
+            (f"{L}Cwt", "spawn --userscript context_switch.py writing",  "normal"),
             (f"{L}Cr",  "spawn --userscript context_switch.py research", "normal"),
             (f"{L}Cm",  "spawn --userscript context_switch.py media",    "normal"),
-            (f"{L}Cwt", "spawn --userscript context_switch.py writing",  "normal"),
             (f"{L}Cg",  "spawn --userscript context_switch.py gaming",   "normal"),
             (f"{L}C0",  "spawn --userscript context_switch.py default",  "normal"),
-            # Show current context in message bar
+            # Show current context in the status bar message area
             (f"{L}Ci",
              f"message-info 'Context: {self._mode.value} — {self._spec.description}'",
              "normal"),
