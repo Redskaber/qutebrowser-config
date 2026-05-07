@@ -1,7 +1,7 @@
 """
 orchestrator.py
 ===============
-Configuration Orchestrator  (composition root)  v15
+Configuration Orchestrator  (composition root)  v16
 
 Responsibilities:
   1.  Build the LayerStack
@@ -21,14 +21,29 @@ Responsibilities:
  15.  MetricsCollector (core.metrics) replaces _last_metrics    [v12]
  16.  audit_trail() / metrics_summary() introspection methods   [v12]
  17.  GetMetricsSummaryQuery handler                            [v12]
- 18.  NetworkLayer event emission after build()                 [v15]  ← NEW
- 19.  SessionChangedEvent emission (proper, not just audit)     [v15]  ← NEW
- 20.  hot_swap property: lazy _WrappedHotSwap                   [v15]  ← NEW
- 21.  GetActiveNetworkQuery handler                             [v15]  ← NEW
- 22.  GetHotSwapStatusQuery handler                             [v15]  ← NEW
- 23.  GetActiveSessionQuery handler                             [v15]  ← NEW
+ 18.  NetworkLayer event emission after build()                 [v15]
+ 19.  SessionChangedEvent emission (proper, not just audit)     [v15]
+ 20.  hot_swap property: lazy _WrappedHotSwap                   [v15]
+ 21.  GetActiveNetworkQuery handler                             [v15]
+ 22.  GetHotSwapStatusQuery handler                             [v15]
+ 23.  GetActiveSessionQuery handler                             [v15]
+ 24.  _active_session / _active_network_mode state tracking     [v16]  ← NEW
+ 25.  _WrappedHotSwap: capture HotSwapResult; propagate changes [v16]  ← NEW
 
-v15 changes:
+v16 changes:
+  - _active_session: str attribute tracks the last emitted session mode.
+    _maybe_emit_session_event() reads it for old_session and updates it
+    after emission.  Startup emits old_session="unknown"; subsequent
+    hot-swaps emit the actual previous value.
+  - _active_network_mode: str attribute mirrors the above for network.
+    _maybe_emit_network_event() reads / updates it similarly.
+  - _WrappedHotSwap._execute(): fn() return value (HotSwapResult) is now
+    captured.  result.changes (int) and result.errors are forwarded to
+    HotSwapCompletedEvent and the orchestrator result dict.  Previously
+    changes was always an empty list because the lambda returned None.
+  - summary() bumped to v16.
+
+v15 changes (retained):
   - _maybe_emit_session_event(): now emits SessionChangedEvent via
     router.emit_session_changed() in addition to the audit entry.
     SessionChangedEvent is a first-class protocol event (mirrors
@@ -217,6 +232,10 @@ class ConfigOrchestrator:
 
         # v15: last hot-swap result for introspection
         self._last_hot_swap_result: Dict[str, Any] = {}
+
+        # v16: track active session/network for accurate old_* in events
+        self._active_session:      str = "unknown"
+        self._active_network_mode: str = "unknown"
 
         # v8: Snapshot store for incremental hot-reload
         self._snapshot_store      = SnapshotStore(max_history=10)
@@ -435,6 +454,8 @@ class ConfigOrchestrator:
         Emit SessionChangedEvent and audit entry if a SessionLayer is registered.
 
         v15: upgrades from audit-only to full protocol event emission.
+        v16: tracks _active_session so old_session reflects the actual
+             previous value instead of always being "unknown".
         Subscribable by config.py via router.events.subscribe(SessionChangedEvent, ...).
         """
         try:
@@ -443,10 +464,11 @@ class ConfigOrchestrator:
             if isinstance(layer, SessionLayer):
                 mode_name = layer.active_session.value
                 self._router.emit_session_changed(
-                    old_session="unknown",
+                    old_session=self._active_session,
                     new_session=mode_name,
                     source=source,
                 )
+                self._active_session = mode_name   # v16: update tracker
                 self._audit_phase(
                     "session",
                     f"active={mode_name}: {layer.active_spec.description}",
@@ -476,21 +498,25 @@ class ConfigOrchestrator:
         """
         Emit NetworkModeChangedEvent if a NetworkLayer is registered.  ← v15
 
+        v16: tracks _active_network_mode so old_mode reflects the actual
+             previous value instead of always being "unknown".
         Called after build() and after hot-swap of the network layer.
         """
         try:
             from layers.network import NetworkLayer
             layer = self._stack.get("network")
             if isinstance(layer, NetworkLayer):
+                mode_name = layer.active_mode.value
                 self._router.emit_network_changed(
-                    old_mode="unknown",
-                    new_mode=layer.active_mode.value,
+                    old_mode=self._active_network_mode,
+                    new_mode=mode_name,
                     proxy=layer.active_spec.proxy,
                     source=source,
                 )
+                self._active_network_mode = mode_name   # v16: update tracker
                 self._audit_phase(
                     "network",
-                    f"active={layer.active_mode.value}: {layer.active_spec.description}",
+                    f"active={mode_name}: {layer.active_spec.description}",
                 )
         except ImportError:
             pass
@@ -850,7 +876,7 @@ class ConfigOrchestrator:
 
         lines = [
             "─" * 60,
-            "ConfigOrchestrator Summary (v15)",
+            "ConfigOrchestrator Summary (v16)",
             "─" * 60,
             self._stack.summary(),
             f"\nFSM: {self._fsm}",
@@ -963,6 +989,11 @@ class _WrappedHotSwap:
       - _last_hot_swap_result storage on the orchestrator
 
     Instantiated lazily via orchestrator.hot_swap property.
+
+    v16 fix: _execute() now captures the HotSwapResult returned by
+    LayerHotSwap operations and propagates result.changes and result.errors
+    to the event and the stored result dict.  Previously changes was
+    always an empty list because the lambda did not forward the return value.
     """
 
     def __init__(self, orchestrator: ConfigOrchestrator) -> None:
@@ -997,14 +1028,25 @@ class _WrappedHotSwap:
         self._execute("insert", getattr(new_layer, "name", "?"), lambda: self._impl.insert(new_layer))
 
     def _execute(self, operation: str, layer_name: str, fn: Any) -> None:
-        """Execute a hot-swap operation with audit, metrics, and event emission."""
+        """
+        Execute a hot-swap operation with audit, metrics, and event emission.
+
+        v16 fix: captures the HotSwapResult returned by LayerHotSwap.swap/
+        remove/insert and forwards result.changes (int) and result.errors
+        to the HotSwapCompletedEvent and the stored result dict.
+        """
         import time as _time
+        from core.hot_swap import HotSwapResult as _HotSwapResult
         t0 = _time.perf_counter()
         errors: List[str] = []
-        changes: List[str] = []
+        n_changes: int = 0
 
         try:
-            fn()
+            result_obj: Any = fn()
+            # LayerHotSwap operations return HotSwapResult
+            if isinstance(result_obj, _HotSwapResult):
+                n_changes = result_obj.changes
+                errors    = list(result_obj.errors)
         except Exception as exc:
             errors.append(str(exc))
             logger.error("[HotSwap] %s(%s) failed: %s", operation, layer_name, exc)
@@ -1012,30 +1054,35 @@ class _WrappedHotSwap:
         duration_ms = (_time.perf_counter() - t0) * 1000
         ok = len(errors) == 0
 
+        # Build descriptive changes list for HotSwapCompletedEvent
+        changes_desc: List[str] = [f"{n_changes} key(s) changed"] if n_changes else []
+
         # Store result on orchestrator
         result: Dict[str, Any] = {
             "operation":   operation,
             "layer_name":  layer_name,
             "ok":          ok,
+            "changes":     n_changes,
             "errors":      errors,
             "duration_ms": round(duration_ms, 2),
         }
-        self._orc._last_hot_swap_result = result # type: ignore[private]
+        self._orc._last_hot_swap_result = result  # type: ignore[attr-defined]
 
         # Audit
-        self._orc._audit_phase( # type: ignore[private]
+        self._orc._audit_phase(  # type: ignore[attr-defined]
             "hot_swap",
-            f"{operation}({layer_name}) {'ok' if ok else 'FAILED'}",
+            f"{operation}({layer_name}) {'ok' if ok else 'FAILED'}  changes={n_changes}",
             level="info" if ok else "error",
             duration_ms=round(duration_ms, 1),
+            changes=n_changes,
             errors=len(errors),
         )
 
         # Emit HotSwapCompletedEvent
-        self._orc._router.emit_hot_swap_completed( # type: ignore[private]
+        self._orc._router.emit_hot_swap_completed(  # type: ignore[attr-defined]
             operation=operation,
             layer_name=layer_name,
-            changes=changes,
+            changes=changes_desc,
             errors=errors,
             duration_ms=duration_ms,
         )
@@ -1043,13 +1090,13 @@ class _WrappedHotSwap:
         # Emit layer-specific follow-up events
         if ok:
             if layer_name == "session":
-                self._orc._maybe_emit_session_event(source="hot_swap") # type: ignore[protect]
+                self._orc._maybe_emit_session_event(source="hot_swap")  # type: ignore[attr-defined]
             if layer_name == "network":
-                self._orc._maybe_emit_network_event(source="hot_swap") # type: ignore[protect]
+                self._orc._maybe_emit_network_event(source="hot_swap")  # type: ignore[attr-defined]
 
         logger.info(
-            "[HotSwap] %s(%s) %s  %.1fms",
-            operation, layer_name, "✓" if ok else "✗", duration_ms,
+            "[HotSwap] %s(%s) %s  changes=%d  %.1fms",
+            operation, layer_name, "✓" if ok else "✗", n_changes, duration_ms,
         )
 
 

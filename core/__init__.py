@@ -88,6 +88,7 @@ from core.pipeline import (
     RetryStage,
     CompositeStage,
     noop_pipeline,
+    deep_merge,
 )
 
 # ── Protocol / MessageRouter ───────────────────────────────────────────────
@@ -211,13 +212,15 @@ __all__ = [
     # ── Lifecycle ─────────────────────────────────────────────────────────
     "LifecycleHook", "LifecycleManager",
     # ── Pipeline ──────────────────────────────────────────────────────────
-    "ConfigPacket", "FilterStage", "LogStage", "MergeStage", "Pipeline",
-    "PipeStage", "TransformStage", "ValidateStage",
-    # pipeline v11
+    "ConfigPacket", "PipeStage", "Pipeline",
+    # original stages
+    "LogStage", "ValidateStage", "TransformStage", "FilterStage", "MergeStage",
+    # v11 stages
     "ReduceStage", "BranchStage", "CacheStage", "AuditStage",
-    # pipeline v12
+    # v12 stages
     "TeeStage", "RetryStage", "CompositeStage",
-    "noop_pipeline",
+    # helpers
+    "noop_pipeline", "deep_merge",
     # ── Protocol / MessageRouter ──────────────────────────────────────────
     "CommandBus", "EventBus", "MessageRouter", "QueryBus",
     "Event", "Command", "Query",

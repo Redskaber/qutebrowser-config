@@ -2,7 +2,7 @@
 
 > A principled, layered qutebrowser configuration — built like software, not a script.
 
-**430+ tests · 9 layers · 10 core modules · 4 strategy modules · 4 policy modules · 18+ themes · NixOS-ready**
+**450+ tests · 9 layers · 10 core modules · 4 strategy modules · 4 policy modules · 18+ themes · NixOS-ready**
 
 ---
 
@@ -74,6 +74,48 @@ Edit **only** the `CONFIGURATION SECTION` and `USER PREFERENCE SECTION` at the t
 | `USER_PDF_VIEWER`      | bool\|None | `None`     | PDF.js enable/disable ← **v14**   |
 | `USER_NEW_TAB_PAGE`    | str\|None  | `None`     | New tab URL ← **v14**             |
 | `USER_TAB_BAR_PADDING` | dict\|None | `None`     | Tab bar padding ← **v14**         |
+
+---
+
+## New in v16
+
+### Bug fix — `_WrappedHotSwap` now propagates change count
+
+**Before v16**, `_last_hot_swap_result["changes"]` was always an empty list and
+`HotSwapCompletedEvent.changes` was always `[]`, even when keys actually changed.
+The lambda passed to `_execute()` was calling `LayerHotSwap.swap()` but discarding
+its `HotSwapResult` return value.
+
+**After v16**, the `HotSwapResult` is captured and its `.changes` (int) and
+`.errors` are forwarded to the event and stored result:
+
+```python
+# From :py after a hot-swap:
+status = router.ask(GetHotSwapStatusQuery())
+# → {"operation": "swap", "layer_name": "network", "ok": True,
+#    "changes": 3, "errors": [], "duration_ms": 0.4}
+#                  ^^^^ now correctly populated
+```
+
+### Bug fix — accurate `old_session` / `old_mode` in protocol events
+
+**Before v16**, `SessionChangedEvent.old_session` and
+`NetworkModeChangedEvent.old_mode` were always `"unknown"`, even after the first
+hot-swap that transitioned from a real mode.
+
+**After v16**, the orchestrator tracks `_active_session` and
+`_active_network_mode` and emits the actual previous value:
+
+```python
+# Startup:  old_session="unknown"  → new_session="evening"
+# Hot-swap: old_session="evening"  → new_session="night"   ← now correct
+```
+
+### Improvement — `deep_merge` public API in `core/pipeline.py`
+
+`_deep_merge` is now exposed as the public `deep_merge` function and included in
+`__all__`. External code that was using `# type: ignore[private]` to import
+`_deep_merge` should switch to `deep_merge`.
 
 ---
 
@@ -209,7 +251,7 @@ NETWORK_MODE = "socks5"    # uses socks5://127.0.0.1:7897 (Clash/V2ray default)
 # From qutebrowser :py session:
 _orchestrator.audit_trail(last_n=20)       # structured lifecycle log
 _orchestrator.metrics_summary(last_n=10)   # timing table
-_orchestrator.summary()                    # full status (v15: network + hot-swap)
+_orchestrator.summary()                    # full status (v16: network + hot-swap changes)
 
 # Via QueryBus:
 router.ask(GetMergedConfigQuery())         # merged settings dict
@@ -226,14 +268,14 @@ router.ask(GetActiveSessionQuery())        # current session mode ← v15
 # All tests
 python3 -m pytest tests/ -v
 
-# v15 suite only
-python3 -m pytest tests/test_v15.py -v
+# v16 suite only
+python3 -m pytest tests/test_v16.py -v
 
 # Quick smoke
 python3 scripts/diagnostics.py summary
 ```
 
-**Total: 430+ tests. All run without a live qutebrowser instance.**
+**Total: 450+ tests. All run without a live qutebrowser instance.**
 
 ---
 

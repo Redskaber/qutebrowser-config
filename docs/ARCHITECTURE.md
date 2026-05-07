@@ -951,7 +951,7 @@ qutebrowser forks Python → loads config.py
            ├─ ConfigStateMachine()
            ├─ build_default_host_registry(...)
            └─ LayerStack()
-                 ├─ register(BaseLayer())           [p=10]
+                 ├─ register(BaseLayer())            [p=10]
                  ├─ register(PrivacyLayer())         [p=20]
                  ├─ register(AppearanceLayer())      [p=30]
                  ├─ register(BehaviorLayer())        [p=40]
@@ -1345,7 +1345,43 @@ python3 scripts/diagnostics.py summary
 
 ## Changelog
 
-### v15 (current)
+### v16 (current)
+
+**Bug fixes — `orchestrator.py`**
+
+- `_WrappedHotSwap._execute()`: the lambda passed to `_execute()` now has its
+  return value (`HotSwapResult`) captured. `result.changes` (int) and
+  `result.errors` are forwarded to `HotSwapCompletedEvent` and stored in
+  `_last_hot_swap_result["changes"]`. Previously `changes` was always an
+  empty list because `fn()` was called but its return value was discarded.
+
+- `_maybe_emit_session_event()`: added `_active_session: str` instance
+  attribute (default `"unknown"`). `old_session` in `SessionChangedEvent`
+  now reflects the actual previous session mode instead of always being
+  `"unknown"`. The tracker is updated after each emission.
+
+- `_maybe_emit_network_event()`: same pattern via `_active_network_mode: str`.
+  `old_mode` in `NetworkModeChangedEvent` now reflects the actual previous
+  network mode.
+
+**Improvement — `core/pipeline.py`**
+
+- `deep_merge` public alias added for `_deep_merge`. Added to `__all__`.
+  External callers should use `from core.pipeline import deep_merge` instead
+  of the private `_deep_merge`.
+
+**Improvement — `core/compose.py`**
+
+- Import updated: `from core.pipeline import ConfigPacket, Pipeline, deep_merge`
+  (was `_deep_merge` with `# type: ignore[private]`).
+
+**Updated: `config.py`** — lifecycle message bumped to v16.
+
+**New: `tests/test_v16.py`** — covers all v16 fixes and regressions.
+
+---
+
+### v15
 
 **New: `layers/network.py`** (priority=27)
 

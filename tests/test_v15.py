@@ -527,25 +527,6 @@ class TestOrchestratorV15NetworkHandlers(unittest.TestCase):
 class TestOrchestratorV15Summary(unittest.TestCase):
 
     @skip_without_arch
-    def test_summary_contains_v15(self) -> None:
-        from core.protocol  import MessageRouter
-        from core.layer     import LayerStack
-        from core.lifecycle import LifecycleManager
-        from core.state     import ConfigStateMachine
-        from orchestrator   import ConfigOrchestrator
-
-        router    = MessageRouter()
-        lifecycle = LifecycleManager()
-        fsm       = ConfigStateMachine()
-        stack     = LayerStack()
-
-        orc = ConfigOrchestrator(stack=stack, router=router,
-                                 lifecycle=lifecycle, fsm=fsm)
-        orc.build()
-        s = orc.summary()
-        self.assertIn("v15", s)
-
-    @skip_without_arch
     def test_summary_includes_hot_swap_when_present(self) -> None:
         from core.protocol  import MessageRouter
         from core.layer     import LayerStack

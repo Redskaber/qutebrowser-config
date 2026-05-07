@@ -42,6 +42,10 @@ v13 (new module):
   - ComposeLayer.child_names() → List[str]
   - ComposeLayer.add(layer) → self (fluent)
   - guard: children that share a name raise LayerCompositionError
+
+v16 change:
+  - Import updated to use public ``deep_merge`` __init__.py output.  Eliminates the ``# type: ignore[private]``
+    suppression and makes the dependency on pipeline.py's public API explicit.
 """
 
 from __future__ import annotations
@@ -51,7 +55,7 @@ from typing import Iterable, List, Optional, Set
 
 from core.types    import ConfigDict
 from core.layer    import LayerProtocol
-from core.pipeline import ConfigPacket, Pipeline, _deep_merge  # type: ignore[private]
+from core.pipeline import ConfigPacket, Pipeline, deep_merge
 
 logger = logging.getLogger("qute.core.compose")
 
@@ -152,7 +156,7 @@ class ComposeLayer(LayerProtocol):
                 packet = pipe.run(ConfigPacket(source=f"compose:{child.name}", data=raw))
                 raw = packet.data
 
-            merged = _deep_merge(merged, raw)
+            merged = deep_merge(merged, raw)
 
         # Apply own pipeline if provided
         if self._pipeline_ is not None:

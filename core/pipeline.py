@@ -33,6 +33,10 @@ v12 changes:
   - Pipeline.__iter__: iterate over stages (replaces the stages() method
     which is retained for backwards compatibility).
 
+v16 changes:
+  - ``deep_merge`` public alias for ``_deep_merge``; added to ``__all__``.
+    External callers should prefer ``from core.pipeline import deep_merge``.
+
 v11 changes (retained):
   - ReduceStage: fold (key, value) pairs using a reducer function.
     Useful for aggregating statistics or computing derived keys.
@@ -840,7 +844,7 @@ def noop_pipeline() -> Pipeline:
     return Pipeline("noop")
 
 
-def _deep_merge(
+def deep_merge(
     base:    Dict[str, Any],
     overlay: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -851,7 +855,7 @@ def _deep_merge(
         if isinstance(existing, dict) and isinstance(v, dict):
             existing = cast(Dict[str, Any], existing)
             v_dict   = cast(Dict[str, Any], v)
-            result[k] = _deep_merge(existing, v_dict)
+            result[k] = deep_merge(existing, v_dict)
         else:
             result[k] = v
     return result
@@ -878,4 +882,5 @@ __all__ = [
     "CompositeStage",
     # helpers
     "noop_pipeline",
+    "deep_merge",
 ]

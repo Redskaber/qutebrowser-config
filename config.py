@@ -1,7 +1,7 @@
 """
 config.py
 =========
-qutebrowser Configuration Entry Point  (v15)
+qutebrowser Configuration Entry Point  (v16)
 
 This is the **only** file qutebrowser loads directly.
 It is intentionally thin: it wires the architecture and delegates
@@ -38,7 +38,12 @@ Strict-mode notes (Pyright):
   - _orchestrator global declared in module scope (type: ignore) so :py
     console sessions can access orchestrator.hot_swap without re-building.
 
-v15 changes:
+v16 changes:
+  - Lifecycle message updated to v16.
+  - No other wiring changes; all v16 fixes are in orchestrator.py /
+    pipeline.py / compose.py.
+
+v15 changes (retained):
   - SessionChangedEvent subscriber added: _on_session_changed().
     Logs active session mode/description on startup and hot-swap.
   - SessionChangedEvent imported from core.protocol (new in v15).
@@ -99,9 +104,9 @@ from layers.appearance  import AppearanceLayer
 from layers.base        import BaseLayer
 from layers.behavior    import BehaviorLayer
 from layers.context     import ContextLayer
+from layers.network     import NetworkLayer # v14
 from layers.performance import PerformanceLayer, PerformanceProfile
 from layers.privacy     import PrivacyLayer, PrivacyProfile
-from layers.network     import NetworkLayer # v14
 from layers.session     import SessionLayer
 from layers.user        import UserLayer
 
@@ -593,7 +598,7 @@ def _build_orchestrator() -> ConfigOrchestrator:
 
     @lifecycle.decorator(LifecycleHook.POST_APPLY, priority=100)
     def _log_apply_done() -> None:
-        logger.info("✓ qutebrowser config applied successfully (v15)")
+        logger.info("✓ qutebrowser config applied successfully (v16)")
 
     @lifecycle.decorator(LifecycleHook.ON_ERROR, priority=10)
     def _log_error() -> None:
