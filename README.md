@@ -2,7 +2,7 @@
 
 > A principled, layered qutebrowser configuration — built like software, not a script.
 
-**385+ tests · 8 layers · 10 core modules · 4 strategy modules · 4 policy modules · 18+ themes · NixOS-ready**
+**430+ tests · 9 layers · 10 core modules · 4 strategy modules · 4 policy modules · 18+ themes · NixOS-ready**
 
 ---
 
@@ -28,189 +28,255 @@ For live development:
 ```
 config.py  ← qutebrowser loads ONLY this file
     │
-    ├── QutebrowserApplier         concrete bridge → qutebrowser config/c API  ← v12.1
+    ├── QutebrowserApplier         concrete bridge → qutebrowser config/c API  ← v12
     │
     └── ConfigOrchestrator          (composition root)
           ├── LayerStack             priority-ordered merge pipeline
           │     ├── BaseLayer        [p=10]  foundational defaults
           │     ├── PrivacyLayer     [p=20]  security & tracking protection
+          │     ├── NetworkLayer     [p=27]  proxy/DNS/TLS configuration    ← v14/v15
           │     ├── AppearanceLayer  [p=30]  theme, fonts, colors
           │     ├── BehaviorLayer    [p=40]  UX, keybindings, per-host rules
-          │     ├── ContextLayer     [p=45]  situational mode (work/research/media/dev/writing/gaming)
+          │     ├── ContextLayer     [p=45]  situational mode (work/research/media/dev/…)
           │     ├── PerformanceLayer [p=50]  cache & rendering tuning
-          │     ├── SessionLayer     [p=55]  time-aware mode (day/evening/night/focus/commute/present)
+          │     ├── SessionLayer     [p=55]  time-aware mode (day/evening/night/focus/…)
           │     ├── ComposeLayer     [p=60+] named layer bundles (any children)  ← v13
           │     └── UserLayer        [p=90]  personal overrides (highest)
           ├── ConfigStateMachine     IDLE → LOADING → VALIDATING → APPLYING → ACTIVE
           ├── MessageRouter          EventBus + CommandBus + QueryBus
           │     └── EventFilter      middleware chain (log/dedupe/throttle/filter)  ← v13
-          ├── LifecycleManager       PRE_INIT → POST_INIT → PRE_APPLY → POST_APPLY → PRE_RELOAD → POST_RELOAD
+          ├── LifecycleManager       PRE_INIT → POST_INIT → PRE_APPLY → POST_APPLY → …
           ├── HostPolicyRegistry     per-host config.set(…, pattern=…) rules
           ├── HealthChecker          post-apply validation (21 built-in checks)
           ├── ConfigValidator        schema validation at build time  ← v13
           ├── IncrementalApplier     delta-only hot reload (wired into reload())
           ├── LayerHotSwap           surgical layer replacement (diff-only apply)  ← v13
+          │     └── _WrappedHotSwap  orchestrator-level wrapper (events + audit)  ← v15
           └── AuditLog               ring-buffer audit trail (capacity=512)
 ```
 
 ---
 
-## Design Principles
+## Quick Configuration Reference
 
-| Principle                   | Implementation                                                                  |
-| --------------------------- | ------------------------------------------------------------------------------- |
-| **Dependency Inversion**    | Layers depend on `LayerProtocol`; orchestrator depends on abstractions          |
-| **Single Responsibility**   | `pipeline.py` transforms, `state.py` tracks FSM, `protocol.py` routes           |
-| **Open/Closed**             | New layers/stages/strategies/policies register without modifying existing code  |
-| **Layered Architecture**    | Strict priority; higher layers override lower; no circular deps                 |
-| **Pipeline / Data Flow**    | Config flows as `ConfigPacket` through composable `PipeStage` chains            |
-| **State Machine**           | Lifecycle is explicit; transitions are data-driven                              |
-| **Strategy Pattern**        | Privacy, performance, merge, search engines are interchangeable                 |
-| **Policy Chain**            | Validation rules compose via Chain of Responsibility                            |
-| **Event-Driven / CQRS**     | Cross-module via typed events — never direct imports between modules            |
-| **Incremental/Delta**       | Hot-reload applies only changed keys                                            |
-| **Data-Driven**             | Host rules, search engines, color schemes, contexts, sessions are data not code |
-| **Health Checks**           | Post-apply validation catches misconfiguration before it silently fails         |
-| **Schema Validation** ← v13 | Structural validation (type, range, pattern) separated from semantic checks     |
-| **Composable Layers** ← v13 | `ComposeLayer` bundles N layers into one named unit                             |
-| **Event Middleware** ← v13  | `EventFilter` adds log/dedupe/throttle without modifying EventBus               |
-| **Surgical Hot-Swap** ← v13 | `LayerHotSwap` replaces one layer and applies only the diff                     |
-| **Observable**              | Every phase emits MetricsEvent; reload emits ConfigReloadedEvent                |
-| **Audit Trail** ← v11       | Structured ring-buffer log of all config lifecycle events                       |
+Edit **only** the `CONFIGURATION SECTION` and `USER PREFERENCE SECTION` at the top of `config.py`:
+
+| Variable               | Type       | Default    | Description                       |
+| ---------------------- | ---------- | ---------- | --------------------------------- |
+| `THEME`                | str        | `"glass"`  | Active color theme                |
+| `PRIVACY_PROFILE`      | enum       | `STANDARD` | Privacy hardening level           |
+| `PERFORMANCE_PROFILE`  | enum       | `BALANCED` | Cache/rendering tuning            |
+| `LEADER_KEY`           | str        | `","`      | Multi-key binding prefix          |
+| `ACTIVE_CONTEXT`       | str\|None  | `None`     | Situational browser mode          |
+| `ACTIVE_SESSION`       | str\|None  | `None`     | Time-aware session                |
+| `NETWORK_MODE`         | str\|None  | `None`     | Proxy/DNS mode ← **v14**          |
+| `USER_DARK_MODE`       | str\|None  | `None`     | Web dark mode algorithm ← **v14** |
+| `USER_PDF_VIEWER`      | bool\|None | `None`     | PDF.js enable/disable ← **v14**   |
+| `USER_NEW_TAB_PAGE`    | str\|None  | `None`     | New tab URL ← **v14**             |
+| `USER_TAB_BAR_PADDING` | dict\|None | `None`     | Tab bar padding ← **v14**         |
 
 ---
 
-## New in v13
+## New in v15
 
-### ComposeLayer — bundle layers into named units
+### SessionChangedEvent — first-class session observability
 
-```python
-from core.compose import compose
-from layers.context import ContextLayer
-from layers.session import SessionLayer
-
-# Bundle context + session into one priority slot
-dev_focus = compose("dev_focus", ContextLayer("dev"), SessionLayer("focus"), priority=57)
-stack.register(dev_focus)
-```
-
-### EventFilter — middleware for the EventBus
+`SessionChangedEvent` is now a proper protocol event (mirrors `ContextSwitchedEvent`).
+Before v15, session startup only produced an audit log entry.
 
 ```python
-from core.event_filter import EventFilter, LoggingMiddleware, DedupeMiddleware
+# In config.py (already wired):
+def _on_session_changed(e: Event) -> None:
+    if isinstance(e, SessionChangedEvent):
+        logger.info("[Session] mode=%s  source=%s", e.new_session, e.source)
 
-router.events = (
-    EventFilter(router.events)
-    .use(LoggingMiddleware())
-    .use(DedupeMiddleware(ttl=0.1))
-)
+router.events.subscribe(SessionChangedEvent, _on_session_changed)
 ```
 
-### LayerHotSwap — surgical layer replacement
+### orchestrator.hot_swap — lazy Open/Closed wrapper
+
+The `orchestrator.hot_swap` property returns a `_WrappedHotSwap` that adds
+audit, event emission, and result storage to `LayerHotSwap` without modifying it:
 
 ```python
-from core.hot_swap import LayerHotSwap
+# Swap network layer at runtime (available via :py in qutebrowser)
+from layers.network import NetworkLayer
+_orchestrator.hot_swap.swap("network", NetworkLayer(mode="tor"))
 
-hs = LayerHotSwap(stack, apply_fn=lambda k, v: applier.apply_settings({k: v}))
-result = hs.swap("context", ContextLayer("research"))
-# Only changed keys applied — no full :config-source needed
+# Check result
+status = router.ask(GetHotSwapStatusQuery())
+# → {"operation": "swap", "layer_name": "network", "ok": True, ...}
 ```
 
-### ConfigValidator — declarative schema validation
+### GetActiveSessionQuery — new query
 
 ```python
-from core.validator import ConfigValidator, FieldSpec, COMMON_SCHEMA
-
-validator = ConfigValidator({
-    **COMMON_SCHEMA,
-    "zoom.default": FieldSpec(type_=str, pattern=r"^\d+%$"),
-})
-result = validator.validate(settings)
-if not result.ok:
-    for error in result.errors:
-        print(error)
+session = router.ask(GetActiveSessionQuery())   # → "night"
 ```
 
----
+### NetworkLayer v15 fixes
 
-## Version History
+- **Bug fix:** URL overrides (`socks5_url=`, `http_url=`, `tor_url=`) no longer
+  mutate the module-level `_NETWORK_TABLE`. Each instance builds its own copy.
+- `active_spec` property added.
+- `available_modes()` classmethod added.
+- `describe()` now includes `proxy=…` value.
+- `__repr__` includes mode and priority.
 
-| Version | Highlights                                                                                                                                                                             |
-| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| v13     | `ComposeLayer` (bundle N layers), `EventFilter` (middleware chain), `LayerHotSwap` (surgical diff-apply), `ConfigValidator` (declarative schema), 70 new tests                         |
-| v12.1   | **BugFix**: `QutebrowserApplier(ConfigApplier)` concrete class added to `config.py` — fixes `TypeError: ConfigApplier() takes no arguments` crash on startup                           |
-| v12     | `core/metrics.py` (MetricsCollector/PhaseTimer), pipeline TeeStage/RetryStage/CompositeStage, orchestrator audit_trail()/metrics_summary(), SRP: telemetry extracted from orchestrator |
-| v11     | SessionLayer (p=55), AuditLog, pipeline ReduceStage/BranchStage/CacheStage/AuditStage, diagnostics.py CLI, config.py ACTIVE_SESSION                                                    |
-| v10     | `core/types.py` (zero-dep primitives), `LayerStack._layers` fix, `core/__init__.py` full exports, conftest.py                                                                          |
-| v9      | Incremental reload, event system v2, health checks v2, QueryBus introspection                                                                                                          |
-| v8      | Extended themes (nord, dracula, glass…), SessionStore, font overrides                                                                                                                  |
-| v7      | `HOST_POLICY_DEV` fix, BehaviorLayer deduplication, keybinding catalog                                                                                                                 |
-| v6      | ContextLayer (work/research/media/dev/writing), context_switch.py                                                                                                                      |
+### diagnostics.py — network command
 
----
-
-## File Map
-
-```
-config.py                   ← entry point (edit CONFIGURATION SECTION only)
-core/
-  audit.py                  ← AuditLog, AuditEntry, AuditFilter, AuditLevel  [v11]
-  compose.py                ← ComposeLayer, compose(), LayerCompositionError  [v13]
-  event_filter.py           ← EventFilter, Middleware, built-in middleware    [v13]
-  health.py                 ← 21 built-in health checks
-  hot_swap.py               ← LayerHotSwap, HotSwapResult                    [v13]
-  hot_swap_events.py        ← LayerSwappedEvent                              [v13]
-  incremental.py            ← delta-only hot-reload
-  layer.py                  ← LayerProtocol, LayerStack, BaseConfigLayer
-  lifecycle.py              ← LifecycleManager, LifecycleHook enum
-  metrics.py                ← MetricsCollector, MetricsSample, PhaseTimer    [v12]
-  pipeline.py               ← ConfigPacket, PipeStage, Pipeline + v11+v12 stages
-  protocol.py               ← EventBus, CommandBus, QueryBus, typed messages
-  state.py                  ← ConfigStateMachine, TRANSITIONS table
-  strategy.py               ← Policy, PolicyChain, StrategyRegistry
-  types.py                  ← ConfigDict, Keybind (zero-dep primitives)
-  validator.py              ← ConfigValidator, FieldSpec, SchemaRegistry     [v13]
-layers/
-  appearance.py  [p=30]     ← themes, fonts, colors
-  base.py        [p=10]     ← foundational defaults, search engines
-  behavior.py    [p=40]     ← UX, keybindings, per-host rules
-  context.py     [p=45]     ← situational mode (work/research/media/dev/…)
-  performance.py [p=50]     ← cache & rendering
-  privacy.py     [p=20]     ← security & tracking protection
-  session.py     [p=55]     ← time-aware session (day/evening/night/…)  [v11]
-  user.py        [p=90]     ← personal overrides
-policies/
-  content.py                ← content blocking policies
-  host.py                   ← per-host exception rules
-  network.py                ← network policies
-  security.py               ← security policies
-strategies/
-  download.py               ← download strategy
-  merge.py                  ← merge strategies (last-wins, first-wins, deep)
-  profile.py                ← UnifiedProfile (DAILY/SECURE/PARANOID/…)
-  search.py                 ← search engine strategy
-tests/
-  test_architecture.py      ← core layer/stack/pipeline tests
-  test_extensions.py        ← strategies, policies, themes, catalog tests
-  test_health.py            ← health check tests
-  test_incremental.py       ← incremental apply tests
-  test_v10.py               ← v10 additions
-  test_v11.py               ← v11 additions (audit, session, pipeline)
-  test_v12.py               ← v12 additions (metrics, TeeStage, RetryStage)
-  test_v13.py               ← v13 additions (compose, event_filter, hot_swap, validator)
+```bash
+python3 scripts/diagnostics.py network
+python3 scripts/diagnostics.py network --network tor
+python3 scripts/diagnostics.py diff --label-a pre-reload --label-b post-reload
 ```
 
 ---
 
-## Running Tests
+## New in v14
+
+### NetworkLayer — declarative proxy/DNS management
+
+A dedicated layer (priority=27) that centralises all network routing configuration:
+
+```python
+# In config.py CONFIGURATION SECTION:
+NETWORK_MODE = "socks5"    # uses socks5://127.0.0.1:7897 (Clash/V2ray default)
+# NETWORK_MODE = "tor"     # routes through Tor (127.0.0.1:9050)
+# NETWORK_MODE = "direct"  # no proxy; direct connection
+# NETWORK_MODE = "system"  # OS-level proxy (default)
+```
+
+**Runtime keybindings (`,N` prefix):**
+
+| Key   | Mode   | Description                             |
+| ----- | ------ | --------------------------------------- |
+| `,Nn` | direct | No proxy; direct connection             |
+| `,Ns` | system | OS-level proxy (default)                |
+| `,N5` | socks5 | SOCKS5 via 127.0.0.1:7897 (Clash/Verge) |
+| `,Nh` | http   | HTTP proxy via 127.0.0.1:7890           |
+| `,Nt` | tor    | Tor SOCKS5 via 127.0.0.1:9050           |
+| `,Ni` | —      | Show current proxy value                |
+
+### UserLayer v14 params
+
+| Variable               | Type       | Default | Description                                             |
+| ---------------------- | ---------- | ------- | ------------------------------------------------------- |
+| `USER_DARK_MODE`       | str\|None  | `None`  | `"off"` / `"simple"` / `"mediumLight"` / `"aggressive"` |
+| `USER_PDF_VIEWER`      | bool\|None | `None`  | `True` = PDF.js; `False` = download                     |
+| `USER_NEW_TAB_PAGE`    | str\|None  | `None`  | URL for new tab (url.default_page)                      |
+| `USER_TAB_BAR_PADDING` | dict\|None | `None`  | `{"top":0,"bottom":0,"left":5,"right":5}`               |
+
+---
+
+## Layer Priority Table
+
+| Layer       | Priority | Purpose                                   |
+| ----------- | -------- | ----------------------------------------- |
+| base        | 10       | Foundational defaults                     |
+| privacy     | 20       | Security & tracking protection            |
+| **network** | **27**   | **Proxy/DNS/TLS configuration ← v14/v15** |
+| appearance  | 30       | Themes, fonts, colors                     |
+| behavior    | 40       | UX, keybindings                           |
+| context     | 45       | Situational modes                         |
+| performance | 50       | Cache, rendering                          |
+| session     | 55       | Time-aware modes                          |
+| compose     | 60+      | Named layer bundles                       |
+| _(custom)_  | 60–80    | Recommended range for user layers         |
+| user        | 90       | Personal overrides (always wins)          |
+
+---
+
+## Keybinding Quick Reference
+
+| Prefix | Scope       | Bindings                                                                                                          |
+| ------ | ----------- | ----------------------------------------------------------------------------------------------------------------- |
+| `,C`   | Context     | `,Cw` (work) `,Cr` (research) `,Cm` (media) `,Cd` (dev) `,C0` (reset) `,Ci` (show)                                |
+| `,S`   | Session     | `,Sd` (day) `,Se` (evening) `,Sn` (night) `,Sf` (focus) `,Sc` (commute) `,Sp` (present) `,S0` (auto) `,Si` (show) |
+| `,N`   | **Network** | **`,Nn` (direct) `,Ns` (system) `,N5` (socks5) `,Nh` (http) `,Nt` (tor) `,Ni` (show)**                            |
+| `,j`   | Privacy     | Toggle JavaScript                                                                                                 |
+| `,i`   | Privacy     | Toggle content blocking                                                                                           |
+| `,c`   | Privacy     | Cycle cookie policy                                                                                               |
+| `,R`   | Readability | Toggle readability mode                                                                                           |
+| `,p/P` | Password    | Fill password / OTP                                                                                               |
+| `,r`   | Config      | Reload configuration                                                                                              |
+
+---
+
+## Audit Trail & Observability
+
+```python
+# From qutebrowser :py session:
+_orchestrator.audit_trail(last_n=20)       # structured lifecycle log
+_orchestrator.metrics_summary(last_n=10)   # timing table
+_orchestrator.summary()                    # full status (v15: network + hot-swap)
+
+# Via QueryBus:
+router.ask(GetMergedConfigQuery())         # merged settings dict
+router.ask(GetActiveNetworkQuery())        # current proxy value  ← v14/v15
+router.ask(GetHotSwapStatusQuery())        # last hot-swap result ← v14/v15
+router.ask(GetActiveSessionQuery())        # current session mode ← v15
+```
+
+---
+
+## Testing
 
 ```bash
 # All tests
 python3 -m pytest tests/ -v
 
-# v13 specifically
-python3 tests/test_v13.py
+# v15 suite only
+python3 -m pytest tests/test_v15.py -v
 
-# Quick smoke test
-python3 scripts/diagnostics.py health
+# Quick smoke
+python3 scripts/diagnostics.py summary
+```
+
+**Total: 430+ tests. All run without a live qutebrowser instance.**
+
+---
+
+## CLI Diagnostics (v15)
+
+```bash
+python3 scripts/diagnostics.py summary                       # full report
+python3 scripts/diagnostics.py layers                        # layer stack
+python3 scripts/diagnostics.py health                        # health checks
+python3 scripts/diagnostics.py network                       # network modes ← v15
+python3 scripts/diagnostics.py network --network tor         # with active mode ← v15
+python3 scripts/diagnostics.py sessions                      # session modes
+python3 scripts/diagnostics.py contexts                      # context modes
+python3 scripts/diagnostics.py themes                        # registered themes
+python3 scripts/diagnostics.py keybindings                   # keybinding table
+python3 scripts/diagnostics.py diff                          # snapshot diff ← v15
+python3 scripts/diagnostics.py audit                         # audit log
+```
+
+---
+
+## File Layout
+
+```
+config.py            ← Entry point (EDIT ONLY THIS FILE)
+layers/
+  base.py       [p=10]   foundational defaults
+  privacy.py    [p=20]   security & tracking protection
+  network.py    [p=27]   proxy/DNS/TLS  ← v14/v15
+  appearance.py [p=30]   themes, fonts, colors
+  behavior.py   [p=40]   UX, keybindings
+  context.py    [p=45]   situational modes
+  performance.py [p=50]  cache, rendering
+  session.py    [p=55]   time-aware modes
+  user.py       [p=90]   personal overrides (edit via config.py)
+core/
+  types.py layer.py pipeline.py state.py lifecycle.py
+  protocol.py strategy.py health.py incremental.py
+  audit.py metrics.py compose.py event_filter.py
+  hot_swap.py hot_swap_events.py validator.py
+policies/   host.py network.py security.py content.py
+strategies/ merge.py profile.py search.py download.py
+themes/     extended.py
+keybindings/ catalog.py
+scripts/    diagnostics.py gen_keybindings.py install.sh
 ```

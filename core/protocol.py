@@ -1,7 +1,7 @@
 """
 core/protocol.py
 ================
-Inter-Module Communication Protocol  (v9)
+Inter-Module Communication Protocol  (v15)
 
 Architecture:
   Publisher → EventBus → [Subscriber, ...]
@@ -16,28 +16,35 @@ Principles:
 
 Pattern: Event-Driven Architecture + CQRS (Command/Query Separation)
 
-v9 additions:
-  - ConfigReloadedEvent(changes_count, errors_count, duration_ms)
-    → emitted after a successful hot-reload cycle completes
-  - SnapshotTakenEvent(label, key_count, version)
-    → emitted when IncrementalApplier records a snapshot
-  - LayerConflictEvent(key, winner_layer, loser_layer)
-    → emitted when LayerStack detects a key override (higher priority wins)
-  - PolicyDeniedEvent(key, value, reason, layer_name)
-    → emitted when a PolicyChain DENY decision fires
-  - MetricsEvent(phase, duration_ms, key_count)
-    → lightweight timing/sizing telemetry for build/apply phases
-  - GetSnapshotQuery()         → Optional[ConfigSnapshot]
-  - GetLayerDiffQuery(a, b)    → List[ConfigChange]
-  - GetLayerNamesQuery()       → List[str]
-  - MessageRouter.emit_reload()    helper
-  - MessageRouter.emit_snapshot()  helper
-  - MessageRouter.emit_conflict()  helper
-  - MessageRouter.emit_metrics()   helper
-  - EventBus.unsubscribe_all()     clears wildcard handlers
-  - CommandBus: allow_replace flag for test overrides
+v15 additions (this file):
+  - SessionChangedEvent(old_session, new_session, source)
+    → emitted after build() when a SessionLayer is active; mirrors
+      ContextSwitchedEvent.  Provides runtime observability for session mode.
+  - NetworkModeChangedEvent(old_mode, new_mode, proxy, source)
+    → emitted by orchestrator after build() and after hot-swap of NetworkLayer.
+  - HotSwapCompletedEvent(operation, layer_name, changes, errors, duration_ms)
+    → emitted after any orchestrator-level LayerHotSwap operation.
+      .ok property: True when errors is empty.
+  - GetActiveNetworkQuery()
+    → returns the currently active proxy string (or 'system').
+  - GetHotSwapStatusQuery()
+    → returns the last hot-swap result as a Dict[str, Any].
+  - GetActiveSessionQuery()
+    → returns the current session mode name string.
+  - MessageRouter.emit_session_changed()  helper  [v15]
+  - MessageRouter.emit_network_changed()  helper  [v15]
+  - MessageRouter.emit_hot_swap_completed() helper [v15]
 
-v5–v8 additions retained:
+v12 additions (retained):
+  - GetMetricsSummaryQuery(last_n)
+
+v9 additions (retained):
+  - ConfigReloadedEvent, SnapshotTakenEvent, LayerConflictEvent
+  - PolicyDeniedEvent, MetricsEvent
+  - GetSnapshotQuery, GetLayerDiffQuery, GetLayerNamesQuery
+  - MessageRouter helper emitters
+
+v5–v8 additions (retained):
   - ContextSwitchedEvent, HealthReportReadyEvent
   - GetHealthReportQuery, GetMergedConfigQuery
   - MessageRouter.emit_health()
@@ -141,6 +148,25 @@ class ContextSwitchedEvent(Event):
 
 
 @dataclass(frozen=True)
+class SessionChangedEvent(Event):
+    """
+    Emitted when the active session mode is established or changes.
+
+    Mirrors ContextSwitchedEvent for the session subsystem.
+    Emitted by orchestrator._maybe_emit_session_event() after build(),
+    and by _WrappedHotSwap when the session layer is hot-swapped.
+
+    Fields:
+        old_session: previous session mode name (or "unknown" on startup)
+        new_session: newly active session mode name
+        source:      "startup" | "hot_swap" | "env" | "file" | "auto"
+    """
+    old_session: str = "unknown"
+    new_session: str = "day"
+    source:      str = "startup"
+
+
+@dataclass(frozen=True)
 class HealthReportReadyEvent(Event):
     """Emitted after HealthChecker.check() completes."""
     ok:            bool = True
@@ -158,6 +184,7 @@ class ConfigReloadedEvent(Event):
         changes_count: number of keys that changed (ADDED + CHANGED + REMOVED)
         errors_count:  number of apply errors (0 = clean)
         duration_ms:   wall-clock time of the reload cycle in milliseconds
+        reason:        trigger reason string
     """
     change_count: int   = 0
     error_count:  int   = 0
@@ -231,6 +258,56 @@ class MetricsEvent(Event):
     phase:       str   = ""
     duration_ms: float = 0.0
     key_count:   int   = 0
+
+
+@dataclass(frozen=True)
+class NetworkModeChangedEvent(Event):
+    """
+    Emitted when the active network/proxy mode is established or changes.
+
+    Emitted by orchestrator after build() (source="startup") and after
+    any hot-swap of the NetworkLayer (source="hot_swap").
+
+    Fields:
+        old_mode: previous NetworkMode value (or "unknown" on startup)
+        new_mode: newly active NetworkMode value (e.g. "socks5", "system")
+        proxy:    the resolved content.proxy value (e.g. "socks5://127.0.0.1:7897")
+        source:   "startup" | "hot_swap" | "env" | "file" | "user_override"
+    """
+    old_mode: str = "unknown"
+    new_mode: str = "system"
+    proxy:    str = "system"
+    source:   str = "startup"
+
+
+@dataclass(frozen=True)
+class HotSwapCompletedEvent(Event):
+    """
+    Emitted after any orchestrator-level LayerHotSwap operation.
+
+    The orchestrator wraps LayerHotSwap in _WrappedHotSwap (Open/Closed),
+    which emits this event after each swap/remove/insert operation.
+
+    Fields:
+        operation:   "swap" | "remove" | "insert"
+        layer_name:  name of the layer that was operated on
+        changes:     list of config-key change descriptions (informational)
+        errors:      list of error strings (empty = success)
+        duration_ms: wall-clock time of the hot-swap operation
+
+    Properties:
+        ok: True when errors is empty
+    """
+    operation:   str       = "swap"
+    layer_name:  str       = ""
+    changes:     List[str] = field(default_factory=list[str])
+    errors:      List[str] = field(default_factory=list[str])
+    duration_ms: float     = 0.0
+
+    @property
+    def ok(self) -> bool:
+        """True when the hot-swap completed without errors."""
+        return len(self.errors) == 0
 
 
 # ─────────────────────────────────────────────
@@ -319,6 +396,7 @@ class GetLayerNamesQuery(Query):
     """
     pass
 
+
 @dataclass(frozen=True)
 class GetMetricsSummaryQuery(Query):
     """
@@ -328,6 +406,51 @@ class GetMetricsSummaryQuery(Query):
     Added in v12.
     """
     last_n: int = 20
+
+
+@dataclass(frozen=True)
+class GetActiveNetworkQuery(Query):
+    """
+    Request the currently active network proxy string.
+
+    Returns: str — the resolved content.proxy value
+    (e.g. "system", "none", "socks5://127.0.0.1:7897").
+
+    Added in v14/v15.
+    """
+    pass
+
+
+@dataclass(frozen=True)
+class GetHotSwapStatusQuery(Query):
+    """
+    Request the result of the last hot-swap operation.
+
+    Returns: Dict[str, Any] with keys:
+        operation   str
+        layer_name  str
+        ok          bool
+        errors      List[str]
+        duration_ms float
+
+    Returns {} if no hot-swap has been performed yet.
+
+    Added in v14/v15.
+    """
+    pass
+
+
+@dataclass(frozen=True)
+class GetActiveSessionQuery(Query):
+    """
+    Request the currently active session mode name.
+
+    Returns: str — session mode value (e.g. "day", "night", "focus"),
+    or "unknown" if no SessionLayer is registered.
+
+    Added in v15.
+    """
+    pass
 
 
 # ─────────────────────────────────────────────
@@ -514,13 +637,16 @@ class MessageRouter:
       commands — imperative, exactly-one-handler (CommandBus)
       queries  — request/response, exactly-one-handler (QueryBus)
 
-    Convenience emitters (v5+):
-      emit_health()    → HealthReportReadyEvent
-      emit_reload()    → ConfigReloadedEvent      [v9]
-      emit_snapshot()  → SnapshotTakenEvent       [v9]
-      emit_conflict()  → LayerConflictEvent       [v9]
-      emit_policy_denied() → PolicyDeniedEvent    [v9]
-      emit_metrics()   → MetricsEvent             [v9]
+    Convenience emitters:
+      emit_health()             → HealthReportReadyEvent      [v5]
+      emit_reload()             → ConfigReloadedEvent         [v9]
+      emit_snapshot()           → SnapshotTakenEvent          [v9]
+      emit_conflict()           → LayerConflictEvent          [v9]
+      emit_policy_denied()      → PolicyDeniedEvent           [v9]
+      emit_metrics()            → MetricsEvent                [v9]
+      emit_session_changed()    → SessionChangedEvent         [v15]
+      emit_network_changed()    → NetworkModeChangedEvent     [v15]
+      emit_hot_swap_completed() → HotSwapCompletedEvent       [v15]
     """
 
     def __init__(self) -> None:
@@ -626,4 +752,49 @@ class MessageRouter:
             phase=phase,
             duration_ms=duration_ms,
             key_count=key_count,
+        ))
+
+    def emit_session_changed(
+        self,
+        old_session: str,
+        new_session: str,
+        source:      str = "startup",
+    ) -> None:
+        """Emit a SessionChangedEvent when session mode is established or changes.  ← v15"""
+        self.emit(SessionChangedEvent(
+            old_session=old_session,
+            new_session=new_session,
+            source=source,
+        ))
+
+    def emit_network_changed(
+        self,
+        old_mode: str,
+        new_mode: str,
+        proxy:    str,
+        source:   str = "startup",
+    ) -> None:
+        """Emit a NetworkModeChangedEvent when the proxy/network mode changes.  ← v15"""
+        self.emit(NetworkModeChangedEvent(
+            old_mode=old_mode,
+            new_mode=new_mode,
+            proxy=proxy,
+            source=source,
+        ))
+
+    def emit_hot_swap_completed(
+        self,
+        operation:   str,
+        layer_name:  str,
+        changes:     List[str],
+        errors:      List[str],
+        duration_ms: float,
+    ) -> None:
+        """Emit a HotSwapCompletedEvent after an orchestrator-level hot-swap.  ← v15"""
+        self.emit(HotSwapCompletedEvent(
+            operation=operation,
+            layer_name=layer_name,
+            changes=changes,
+            errors=errors,
+            duration_ms=duration_ms,
         ))

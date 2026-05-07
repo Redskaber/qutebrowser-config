@@ -1,4 +1,4 @@
-# Extending the Configuration (v13)
+# Extending the Configuration (v15)
 
 This guide covers every extension point in the architecture.
 Read [ARCHITECTURE.md](ARCHITECTURE.md) first for design context.
@@ -20,12 +20,15 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) first for design context.
 11. [Using Pipeline v12 Stages](#using-pipeline-v12-stages)
 12. [Adding an Event Middleware](#adding-an-event-middleware) ← v13
 13. [Using LayerHotSwap](#using-layerhotswap) ← v13
-14. [Using ConfigValidator](#using-configvalidator) ← v13
-15. [Using the Audit System](#using-the-audit-system)
-16. [Using the Metrics System](#using-the-metrics-system)
-17. [Adding a Search Strategy](#adding-a-search-strategy)
-18. [Overriding Fonts](#overriding-fonts)
-19. [CLI Diagnostics Reference](#cli-diagnostics-reference)
+14. [Using orchestrator.hot_swap](#using-orchestratorhot_swap) ← v15
+15. [Using NetworkLayer](#using-networklayer) ← v14/v15
+16. [Subscribing to Session/Network Events](#subscribing-to-sessionnetwork-events) ← v15
+17. [Using ConfigValidator](#using-configvalidator) ← v13
+18. [Using the Audit System](#using-the-audit-system)
+19. [Using the Metrics System](#using-the-metrics-system)
+20. [Adding a Search Strategy](#adding-a-search-strategy)
+21. [Overriding Fonts](#overriding-fonts)
+22. [CLI Diagnostics Reference](#cli-diagnostics-reference)
 
 ---
 
@@ -671,6 +674,128 @@ hs.swap("context", ContextLayer(new_context))
 
 ---
 
+## Using orchestrator.hot_swap ← v15
+
+`orchestrator.py::_WrappedHotSwap`
+
+The `orchestrator.hot_swap` property returns a lazy-initialised `_WrappedHotSwap`
+that wraps `LayerHotSwap` with orchestrator-level audit, event emission, and result
+storage. (**Open/Closed** — `LayerHotSwap` itself is unchanged.)
+
+### Accessing hot_swap
+
+```python
+# After orchestrator is built in config.py:
+orc = _orchestrator
+
+# Swap the network layer at runtime
+from layers.network import NetworkLayer
+orc.hot_swap.swap("network", NetworkLayer(mode="tor"))
+
+# Remove a layer temporarily
+orc.hot_swap.remove("context")
+
+# Insert a new layer
+orc.hot_swap.insert(MyLayer())
+```
+
+### Inspecting the last result
+
+```python
+from core.protocol import GetHotSwapStatusQuery
+status = router.ask(GetHotSwapStatusQuery())
+# Returns: {operation, layer_name, ok, errors, duration_ms}
+# Returns: {} if no hot-swap has been performed yet
+if not status.get("ok"):
+    print("Errors:", status.get("errors"))
+```
+
+---
+
+## Using NetworkLayer ← v14/v15
+
+`layers/network.py` — Priority: 27
+
+### Enabling in config.py
+
+```python
+LAYERS: dict[str, bool] = {
+    "network": True,   # True by default
+    # ...
+}
+NETWORK_MODE: Optional[str] = None  # "direct"|"system"|"socks5"|"http"|"tor"|"offline"
+```
+
+### Switching proxy at startup
+
+```python
+# In config.py CONFIGURATION SECTION:
+NETWORK_MODE = "socks5"   # use Clash/Verge SOCKS5 on startup
+USER_PROXY   = None       # must be None so NetworkLayer controls proxy
+```
+
+### Custom proxy ports
+
+```python
+# In config.py _build_orchestrator():
+stack.register(NetworkLayer(
+    mode       = NETWORK_MODE,
+    leader     = LEADER_KEY,
+    socks5_url = "socks5://192.168.1.1:1080",
+    http_url   = "http://192.168.1.1:8080",
+))
+```
+
+URL overrides do not mutate the module-level `_NETWORK_TABLE` — each
+`NetworkLayer` instance builds its own spec table.
+
+### Switching proxy at runtime
+
+Use `,N*` keybindings (see [KEYBINDINGS.md](KEYBINDINGS.md)) or write the
+mode name to `~/.config/qutebrowser/.network`.
+
+---
+
+## Subscribing to Session/Network Events ← v15
+
+### SessionChangedEvent
+
+Emitted by the orchestrator after `build()` when a `SessionLayer` is active,
+and after hot-swap operations that affect the session layer.
+
+```python
+from core.protocol import SessionChangedEvent, Event
+
+def _on_session_changed(event: Event) -> None:
+    if isinstance(event, SessionChangedEvent):
+        print(f"Session: {event.old_session} → {event.new_session} ({event.source})")
+
+router.events.subscribe(SessionChangedEvent, _on_session_changed)
+```
+
+### NetworkModeChangedEvent
+
+```python
+from core.protocol import NetworkModeChangedEvent, Event
+
+def _on_network_changed(event: Event) -> None:
+    if isinstance(event, NetworkModeChangedEvent):
+        print(f"Network: {event.old_mode} → {event.new_mode}  proxy={event.proxy}")
+
+router.events.subscribe(NetworkModeChangedEvent, _on_network_changed)
+```
+
+### Querying current state
+
+```python
+from core.protocol import GetActiveSessionQuery, GetActiveNetworkQuery
+
+session = router.ask(GetActiveSessionQuery())   # → "evening"
+proxy   = router.ask(GetActiveNetworkQuery())   # → "system"
+```
+
+---
+
 ## Using ConfigValidator
 
 `core/validator.py` ← v13
@@ -924,6 +1049,8 @@ python3 scripts/diagnostics.py contexts      # context table with engine counts
 python3 scripts/diagnostics.py sessions      # session table with delta keys
 python3 scripts/diagnostics.py themes        # all registered themes
 python3 scripts/diagnostics.py keybindings   # full keybinding reference
+python3 scripts/diagnostics.py network       # all network modes (v15)
+python3 scripts/diagnostics.py diff          # snapshot diff (v15)
 
 # Options
 --context   CONTEXT   activate a context before inspecting
@@ -994,3 +1121,17 @@ When adding a **schema** ← v13:
 - [ ] Call `get_schema_registry().register("name", schema_dict)` in your module
 - [ ] Use `FieldSpec` with precise constraints
 - [ ] Test valid and invalid cases explicitly
+
+When adding a **network mode** ← v14/v15:
+
+- [ ] Extend `NetworkMode` enum in `layers/network.py`
+- [ ] Add `NetworkSpec` to `_build_spec_table()` return dict
+- [ ] Add `,N<key>` keybinding in `_keybindings()`
+- [ ] Update `KEYBINDINGS.md` network table
+
+When subscribing to **orchestrator events** ← v15:
+
+- [ ] Import event type from `core.protocol`
+- [ ] `router.events.subscribe(EventType, handler)` in `config.py`
+- [ ] Handler signature: `def handler(event: Event) -> None`
+- [ ] Use `isinstance(event, EventType)` guard inside handler

@@ -1,4 +1,4 @@
-# Architecture Deep-Dive (v13)
+# Architecture Deep-Dive (v15)
 
 > For the quick-start and overview, see [README.md](README.md).
 > This document targets contributors and layer authors.
@@ -23,12 +23,13 @@
 14. [EventFilter Middleware](#eventfilter-middleware) ← v13
 15. [LayerHotSwap](#layerhotswap) ← v13
 16. [ConfigValidator](#configvalidator) ← v13
-17. [Health Check System](#health-check-system)
-18. [Data Flow (annotated)](#data-flow-annotated)
-19. [Dependency Graph](#dependency-graph)
-20. [Extension Points](#extension-points)
-21. [Testing Strategy](#testing-strategy)
-22. [Changelog](#changelog)
+17. [NetworkLayer](#networklayer) ← v14/v15
+18. [Health Check System](#health-check-system)
+19. [Data Flow (annotated)](#data-flow-annotated)
+20. [Dependency Graph](#dependency-graph)
+21. [Extension Points](#extension-points)
+22. [Testing Strategy](#testing-strategy)
+23. [Changelog](#changelog)
 
 ---
 
@@ -85,6 +86,7 @@ core/
   lifecycle.py       ← LifecycleManager, LifecycleHook
   protocol.py        ← EventBus, CommandBus, QueryBus, typed messages
                         + v12: GetMetricsSummaryQuery
+                        + v15: SessionChangedEvent, NetworkModeChangedEvent, HotSwapCompletedEvent
   strategy.py        ← Policy, PolicyChain, StrategyRegistry
   health.py          ← HealthCheck, HealthChecker, 21 built-in checks
   incremental.py     ← ConfigSnapshot, ConfigDiffer, IncrementalApplier
@@ -99,6 +101,7 @@ core/
 layers/
   base.py        [p=10]   foundational defaults, search engines
   privacy.py     [p=20]   security & tracking protection
+  network.py     [p=27]   proxy/DNS/TLS routing  ← v14/v15
   appearance.py  [p=30]   themes, fonts, colors
   behavior.py    [p=40]   UX, keybindings, per-host rules
   context.py     [p=45]   situational mode (work/research/media/dev/…)
@@ -129,6 +132,7 @@ Each layer:
 | ----------- | -------- | ----------------------------------- |
 | base        | 10       | Foundational defaults               |
 | privacy     | 20       | Security & tracking protection      |
+| network     | **27**   | Proxy/DNS/TLS routing ← v14/v15     |
 | appearance  | 30       | Theme, fonts, colors                |
 | behavior    | 40       | UX, keybindings, per-host rules     |
 | context     | 45       | Situational mode overrides          |
@@ -445,6 +449,87 @@ Resolution order (highest wins):
 | `,Sp` | present      |
 | `,S0` | auto         |
 | `,Si` | show current |
+
+---
+
+## NetworkLayer ← v14/v15
+
+`layers/network.py` — Priority 27 (between `privacy[20]` and `appearance[30]`)
+
+Centralises declarative network routing settings. Before v14, proxy, DNS prefetch,
+and referrer policy were scattered across `BaseLayer`, `PrivacyLayer`, and `UserLayer`.
+
+### Separation of Concerns
+
+| Module                | Role                                                         |
+| --------------------- | ------------------------------------------------------------ |
+| `layers/network.py`   | What the network settings **ARE** (declarative, data-driven) |
+| `policies/network.py` | What the settings **MUST NOT violate** (enforcement)         |
+| `layers/user.py`      | Personal runtime override (`proxy=` param, p=90)             |
+
+### Design: Data-Driven via NetworkSpec
+
+```
+NetworkMode  (str Enum)
+  ├── DIRECT   → proxy=none,   dns=on,  referer=always
+  ├── SYSTEM   → proxy=system, dns=on,  referer=always   ← default
+  ├── SOCKS5   → proxy=socks5://127.0.0.1:7897, dns=off, referer=same-origin
+  ├── HTTP     → proxy=http://127.0.0.1:7890,  dns=off, referer=same-origin
+  ├── TOR      → proxy=socks5://127.0.0.1:9050, dns=off, referer=never,
+  │              tls_errors=block
+  └── OFFLINE  → proxy=none, dns=off, referer=never
+```
+
+A `NetworkSpec` frozen dataclass holds all settings for one mode.
+`_build_spec_table()` builds the full mode→spec mapping. The module-level
+`_NETWORK_TABLE` is **never mutated** — instances that need URL overrides
+build a fresh per-instance copy.
+
+### Mode Resolution (4-source chain)
+
+1. `mode=` constructor parameter (from `NETWORK_MODE` in `config.py`)
+2. `QUTE_NETWORK` environment variable
+3. `~/.config/qutebrowser/.network` file (written by `,N*` keybindings)
+4. `SYSTEM` fallback
+
+### Protocol Events (v15)
+
+`NetworkModeChangedEvent` is emitted by the orchestrator after `build()`
+(`source="startup"`) and after hot-swap of the network layer (`source="hot_swap"`).
+
+```python
+router.events.subscribe(NetworkModeChangedEvent, handler)
+proxy_str = router.ask(GetActiveNetworkQuery())   # → "socks5://127.0.0.1:7897"
+```
+
+### Runtime Keybindings (`,N` prefix)
+
+| Key   | Mode   | Command                             |
+| ----- | ------ | ----------------------------------- |
+| `,Nn` | direct | `set content.proxy none`            |
+| `,Ns` | system | `set content.proxy system`          |
+| `,N5` | socks5 | `set content.proxy socks5://…:7897` |
+| `,Nh` | http   | `set content.proxy http://…:7890`   |
+| `,Nt` | tor    | `set content.proxy socks5://…:9050` |
+| `,Ni` | —      | `config-info content.proxy`         |
+
+Alias: `:net` → shows active mode and description.
+
+### \_WrappedHotSwap (orchestrator.py) ← v15
+
+`orchestrator.hot_swap` property returns a lazy-initialised `_WrappedHotSwap`
+that wraps `LayerHotSwap` with audit, event emission, and result storage
+(**Open/Closed** — `LayerHotSwap` itself is not modified):
+
+| Concern                 | LayerHotSwap | \_WrappedHotSwap |
+| ----------------------- | ------------ | ---------------- |
+| Structural swap         | ✓            | delegates to     |
+| Snapshot / diff         | ✓            | delegates to     |
+| Audit entry             | ✗            | ✓                |
+| HotSwapCompletedEvent   | ✗            | ✓                |
+| SessionChangedEvent     | ✗            | ✓ (if session)   |
+| NetworkModeChangedEvent | ✗            | ✓ (if network)   |
+| Result storage          | ✗            | ✓                |
 
 ---
 
@@ -1260,7 +1345,70 @@ python3 scripts/diagnostics.py summary
 
 ## Changelog
 
-### v13 (current)
+### v15 (current)
+
+**New: `layers/network.py`** (priority=27)
+
+- `NetworkMode` string enum: DIRECT / SYSTEM / SOCKS5 / HTTP / TOR / OFFLINE
+- `NetworkSpec` frozen dataclass: proxy, dns_prefetch, referer, tls_errors, description
+- `_build_spec_table(socks5_url, http_url, tor_url)` — pure factory; no global mutation
+- `_NETWORK_TABLE` — module-level default table (never mutated)
+- `_resolve_active_mode(param)` — 4-source resolution chain
+- `NetworkLayer(mode, leader, socks5_url, http_url, tor_url)` — BaseConfigLayer
+  - `active_mode`, `active_spec`, `available_modes()`, `describe()`, `__repr__`
+  - `_settings()` — 4 qutebrowser keys from NetworkSpec
+  - `_keybindings()` — `,N*` prefix (6 bindings)
+  - `_aliases()` — `:net`
+- **Fix:** URL override params no longer mutate `_NETWORK_TABLE`
+
+**Updated: `core/protocol.py`** — v15 additions
+
+- `SessionChangedEvent(old_session, new_session, source)` — mirrors ContextSwitchedEvent
+- `GetActiveSessionQuery()` — returns current session mode name
+- `NetworkModeChangedEvent(old_mode, new_mode, proxy, source)` — network startup/swap
+- `HotSwapCompletedEvent(operation, layer_name, changes, errors, duration_ms)` — `.ok` property
+- `GetActiveNetworkQuery()` — returns active proxy string
+- `GetHotSwapStatusQuery()` — returns last hot-swap result dict
+- `MessageRouter.emit_session_changed()` — convenience helper
+- `MessageRouter.emit_network_changed()` — convenience helper
+- `MessageRouter.emit_hot_swap_completed()` — convenience helper
+
+**Updated: `orchestrator.py`** — v15 additions
+
+- `_maybe_emit_session_event(source)` — now emits `SessionChangedEvent` (was audit-only)
+- `_maybe_emit_network_event(source)` — new; emits `NetworkModeChangedEvent`
+- `hot_swap` property — lazy `_WrappedHotSwap` (Open/Closed wrapper)
+- `_WrappedHotSwap` — audit + event emission + result storage around `LayerHotSwap`
+- `_last_hot_swap_result` — stored for `GetHotSwapStatusQuery`
+- New query handlers: `GetActiveNetworkQuery`, `GetHotSwapStatusQuery`, `GetActiveSessionQuery`
+- `summary()` — includes Network and HotSwap lines
+
+**Updated: `config.py`** — v15 additions
+
+- `SessionChangedEvent` imported; subscriber `_on_session_changed` wired
+- `_orchestrator` global typed as `Optional[ConfigOrchestrator]`
+- Lifecycle message updated to v15
+
+**New: `tests/test_v15.py`** — 53 tests
+
+Covers: protocol v15 events/queries, NetworkLayer v15 fixes, orchestrator v15,
+config wiring, regressions.
+
+**Total test count: ~430+**
+
+---
+
+### v14
+
+**New: `layers/network.py`** (priority=27) — initial NetworkLayer implementation.
+
+**Updated: `orchestrator.py`** — hot_swap property; GetActiveNetworkQuery/GetHotSwapStatusQuery handlers.
+
+**New: `tests/test_v14.py`** — 78 tests
+
+---
+
+### v13
 
 **New: `core/compose.py`**
 

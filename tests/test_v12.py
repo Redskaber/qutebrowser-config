@@ -623,7 +623,8 @@ class TestOrchestratorV12Methods(unittest.TestCase):
         orch = self._build_minimal_orchestrator()
         result = orch.summary()
         self.assertIsInstance(result, str)
-        self.assertIn("v12", result)
+        # Summary version reflects current orchestrator (v15)
+        self.assertIn("ConfigOrchestrator Summary", result)
 
     def test_handle_metrics_summary_query(self) -> None:
         orch = self._build_minimal_orchestrator()

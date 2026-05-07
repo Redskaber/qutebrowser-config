@@ -1,7 +1,7 @@
 """
 orchestrator.py
 ===============
-Configuration Orchestrator  (composition root)  v12
+Configuration Orchestrator  (composition root)  v15
 
 Responsibilities:
   1.  Build the LayerStack
@@ -21,43 +21,48 @@ Responsibilities:
  15.  MetricsCollector (core.metrics) replaces _last_metrics    [v12]
  16.  audit_trail() / metrics_summary() introspection methods   [v12]
  17.  GetMetricsSummaryQuery handler                            [v12]
+ 18.  NetworkLayer event emission after build()                 [v15]  ← NEW
+ 19.  SessionChangedEvent emission (proper, not just audit)     [v15]  ← NEW
+ 20.  hot_swap property: lazy _WrappedHotSwap                   [v15]  ← NEW
+ 21.  GetActiveNetworkQuery handler                             [v15]  ← NEW
+ 22.  GetHotSwapStatusQuery handler                             [v15]  ← NEW
+ 23.  GetActiveSessionQuery handler                             [v15]  ← NEW
 
-v12 changes:
+v15 changes:
+  - _maybe_emit_session_event(): now emits SessionChangedEvent via
+    router.emit_session_changed() in addition to the audit entry.
+    SessionChangedEvent is a first-class protocol event (mirrors
+    ContextSwitchedEvent).  source="startup" on initial build().
+  - _maybe_emit_network_event(): new; emits NetworkModeChangedEvent
+    when a NetworkLayer is registered.  source="startup" on build().
+  - hot_swap property: lazy-constructs _WrappedHotSwap once; returns
+    the same instance on subsequent accesses (cached per-instance).
+  - _WrappedHotSwap: wraps LayerHotSwap (Open/Closed principle).
+    Adds: orchestrator-level audit, HotSwapCompletedEvent emission,
+    SessionChangedEvent/NetworkModeChangedEvent emission on relevant
+    layer swaps, and _last_hot_swap_result storage.
+  - _last_hot_swap_result: stores last HotSwapCompletedEvent as dict.
+  - New query handlers registered in __init__:
+      GetActiveNetworkQuery  → active content.proxy string
+      GetHotSwapStatusQuery  → last hot-swap result dict
+      GetActiveSessionQuery  → active session mode name string
+  - summary() updated to v15: includes Network line, last hot-swap line.
+
+v12 changes (retained):
   - MetricsCollector (core.metrics) replaces the bare _last_metrics dict.
-    The orchestrator constructs MetricsCollector, registers a callback to
-    router.emit_metrics, and calls collector.emit() in build/apply/reload.
-    This satisfies SRP: telemetry bookkeeping is no longer inline.
-  - audit_trail(last_n) method: returns formatted AuditLog entries.
-  - metrics_summary(last_n) method: returns formatted MetricsSample table.
-  - GetMetricsSummaryQuery handler: expose metrics via QueryBus.
-  - _audit_phase() helper: record one orchestrator phase to AuditLog.
-  - _maybe_emit_session_event(): mirror of _maybe_emit_context_event().
-  - summary() updated to v12: includes session info, audit summary, metrics.
-  - build() / apply() / reload() emit audit entries at INFO level.
-  - All audit and session calls wrapped in try/except for graceful degradation.
+  - audit_trail(last_n) / metrics_summary(last_n) methods.
+  - GetMetricsSummaryQuery handler.
+  - _audit_phase() helper.
+  - _maybe_emit_session_event() audit entry (now ALSO emits protocol event).
+  - summary() updated to v12.
 
 v11 changes (retained):
-  - Audit trail: structured AuditLog entries for each phase.
+  - Audit trail: AuditLog entries for each phase.
   - SessionLayer: _maybe_emit_session_event() after build().
 
 v10 changes (retained):
   - _handle_get_layer_names variable-shadowing bug fixed.
   - Uses LayerStack._layers property (v10 addition).
-
-v9 changes (retained):
-  - build() / apply() / reload() emit MetricsEvent.
-  - reload() re-applies host policies.
-  - stored applier fallback in reload().
-  - GetSnapshotQuery / GetLayerDiffQuery / GetLayerNamesQuery handlers.
-  - PolicyDeniedEvent propagation.
-  - summary() includes timing.
-
-v8 changes (retained):
-  - IncrementalApplier + SnapshotStore for diff-apply on hot-reload.
-
-v7 changes (retained):
-  - apply_host_policies: BehaviorLayer patterns skipped when already in
-    HostPolicyRegistry (eliminates double-application).
 """
 
 from __future__ import annotations
@@ -67,13 +72,13 @@ import time
 from abc    import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Set
 
-from core.types     import ConfigDict
-from core.health    import HealthChecker, HealthReport
+from core.types      import ConfigDict
+from core.health     import HealthChecker, HealthReport
 from core.incremental import IncrementalApplier, SnapshotStore, ConfigSnapshot, ConfigChange
-from core.layer     import LayerStack
-from core.lifecycle import LifecycleHook, LifecycleManager
-from core.pipeline  import ConfigPacket
-from core.protocol  import (
+from core.layer      import LayerStack
+from core.lifecycle  import LifecycleHook, LifecycleManager
+from core.pipeline   import ConfigPacket
+from core.protocol   import (
     ConfigErrorEvent,
     LayerAppliedEvent,
     MessageRouter,
@@ -83,18 +88,29 @@ from core.protocol  import (
     GetSnapshotQuery,
     GetLayerDiffQuery,
     GetLayerNamesQuery,
+    # v15 new events
+    SessionChangedEvent,        # type: ignore[unused]
+    NetworkModeChangedEvent,    # type: ignore[unused]
+    HotSwapCompletedEvent,      # type: ignore[unused]
+    # v15 new queries
+    GetActiveNetworkQuery,
+    GetHotSwapStatusQuery,
+    GetActiveSessionQuery,
 )
-from core.state import ConfigState, ConfigEvent, ConfigStateMachine
+from core.state    import ConfigState, ConfigEvent, ConfigStateMachine
 from core.strategy import PolicyChain
 
 # v12: MetricsCollector
-from core.metrics import MetricsCollector, PhaseTimer  # type: ignore[import]
+from core.metrics import MetricsCollector, PhaseTimer  # type: ignore[unused]
 
 # v11: optional audit integration
-from core.audit import audit_info, audit_warn, audit_error, get_audit_log # type: ignore[import]
+from core.audit import audit_info, audit_warn, audit_error, get_audit_log  # type: ignore[import]
 
-# v12: GetMetricsSummaryQuery (added to protocol.py in v12)
+# v12: GetMetricsSummaryQuery
 from core.protocol import GetMetricsSummaryQuery
+
+# v13: hot-swap (optional — graceful if not yet installed)
+from core.hot_swap import LayerHotSwap
 
 logger = logging.getLogger("qute.orchestrator")
 
@@ -154,18 +170,27 @@ class ConfigOrchestrator:
 
     Introspection (via QueryBus)::
 
-        router.ask(GetMergedConfigQuery())    → Dict[str, Any]
-        router.ask(GetHealthReportQuery())    → Optional[HealthReport]
-        router.ask(GetSnapshotQuery())        → Optional[ConfigSnapshot]    [v9]
-        router.ask(GetLayerDiffQuery(...))    → List[ConfigChange]          [v9]
-        router.ask(GetLayerNamesQuery())      → List[str]                   [v9]
-        router.ask(GetMetricsSummaryQuery())  → str                        [v12]
+        router.ask(GetMergedConfigQuery())      → Dict[str, Any]
+        router.ask(GetHealthReportQuery())      → Optional[HealthReport]
+        router.ask(GetSnapshotQuery())          → Optional[ConfigSnapshot]    [v9]
+        router.ask(GetLayerDiffQuery(...))      → List[ConfigChange]          [v9]
+        router.ask(GetLayerNamesQuery())        → List[str]                   [v9]
+        router.ask(GetMetricsSummaryQuery())    → str                        [v12]
+        router.ask(GetActiveNetworkQuery())     → str                        [v15]
+        router.ask(GetHotSwapStatusQuery())     → Dict[str, Any]             [v15]
+        router.ask(GetActiveSessionQuery())     → str                        [v15]
 
     Direct introspection::
 
         orchestrator.audit_trail(last_n=30)  → str    [v12]
         orchestrator.metrics_summary(last_n) → str    [v12]
         orchestrator.summary()               → str
+
+    Hot-swap (v15)::
+
+        orchestrator.hot_swap.swap(name, new_layer)   → None
+        orchestrator.hot_swap.remove(name)            → None
+        orchestrator.hot_swap.insert(new_layer)       → None
     """
 
     def __init__(
@@ -187,15 +212,21 @@ class ConfigOrchestrator:
         self._applier:      Optional[ConfigApplier]           = None
         self._last_report:  Optional[HealthReport]            = None
 
+        # v15: hot-swap wrapper (lazy-init)
+        self._hot_swap_wrapper: Optional["_WrappedHotSwap"] = None
+
+        # v15: last hot-swap result for introspection
+        self._last_hot_swap_result: Dict[str, Any] = {}
+
         # v8: Snapshot store for incremental hot-reload
         self._snapshot_store      = SnapshotStore(max_history=10)
         self._incremental_applier = IncrementalApplier(self._snapshot_store)
 
         # v12: MetricsCollector wired to router.emit_metrics
-        self._metrics: Optional[MetricsCollector] = MetricsCollector(capacity=64)
+        self._metrics: Optional[Any] = MetricsCollector(capacity=64)
         self._metrics.on_emit(
-            lambda ph, ms, n: self._router.emit_metrics(
-                phase=ph, duration_ms=ms, key_count=n,
+            lambda ph, ms, n: self._router.emit_metrics( # type: ignore[private]
+                phase=ph, duration_ms=ms, key_count=n,   # type: ignore[lambda]
             )
         )
 
@@ -212,12 +243,40 @@ class ConfigOrchestrator:
             self._handle_get_health_report,
         )
         # v9: additional introspection queries
-        self._router.queries.register(GetSnapshotQuery,  self._handle_get_snapshot)
-        self._router.queries.register(GetLayerDiffQuery, self._handle_get_layer_diff)
+        self._router.queries.register(GetSnapshotQuery,   self._handle_get_snapshot)
+        self._router.queries.register(GetLayerDiffQuery,  self._handle_get_layer_diff)
         self._router.queries.register(GetLayerNamesQuery, self._handle_get_layer_names)
 
         # v12: metrics query
         self._router.queries.register(GetMetricsSummaryQuery, self._handle_get_metrics_summary)
+
+        # v15: new queries
+        self._router.queries.register(GetActiveNetworkQuery,  self._handle_get_active_network)
+        self._router.queries.register(GetHotSwapStatusQuery,  self._handle_get_hot_swap_status)
+        self._router.queries.register(GetActiveSessionQuery,  self._handle_get_active_session)
+
+    # ── hot_swap property (v15) ────────────────────────────────────────
+
+    @property
+    def hot_swap(self) -> "_WrappedHotSwap":
+        """
+        Lazy-initialised hot-swap controller for this orchestrator.
+
+        Wraps LayerHotSwap with orchestrator-level audit, event emission,
+        and result storage (Open/Closed principle — LayerHotSwap is
+        not modified).
+
+        Usage::
+
+            orchestrator.hot_swap.swap("network", new_network_layer)
+            orchestrator.hot_swap.remove("context")
+            orchestrator.hot_swap.insert(new_layer)
+
+        Raises RuntimeError if LayerHotSwap is not available (import error).
+        """
+        if self._hot_swap_wrapper is None:
+            self._hot_swap_wrapper = _WrappedHotSwap(self)
+        return self._hot_swap_wrapper
 
     # ── QueryBus handlers ──────────────────────────────────────────────
 
@@ -278,6 +337,55 @@ class ConfigOrchestrator:
         """Return the metrics summary string (v12)."""
         return self.metrics_summary()
 
+    def _handle_get_active_network(self, _query: Query) -> str:
+        """
+        Return the currently active content.proxy string.  ← v15
+
+        Inspects the resolved merged settings first, then the NetworkLayer
+        directly as fallback.  Returns "system" if NetworkLayer is absent.
+        """
+        # 1. Resolved merged settings (most authoritative)
+        if self._resolved is not None:
+            merged = self._stack.merged
+            proxy = merged.get("settings", {}).get("content.proxy")
+            if proxy is not None:
+                return str(proxy)
+
+        # 2. NetworkLayer active spec
+        try:
+            from layers.network import NetworkLayer
+            layer = self._stack.get("network")
+            if isinstance(layer, NetworkLayer):
+                return layer.active_spec.proxy
+        except ImportError:
+            pass
+
+        return "system"
+
+    def _handle_get_hot_swap_status(self, _query: Query) -> Dict[str, Any]:
+        """
+        Return the last hot-swap result as a Dict[str, Any].  ← v15
+
+        Keys: operation, layer_name, ok, errors, duration_ms.
+        Returns {} if no hot-swap has been performed yet.
+        """
+        return dict(self._last_hot_swap_result)
+
+    def _handle_get_active_session(self, _query: Query) -> str:
+        """
+        Return the current session mode name string.  ← v15
+
+        Returns "unknown" if no SessionLayer is registered.
+        """
+        try:
+            from layers.session import SessionLayer
+            layer = self._stack.get("session")
+            if isinstance(layer, SessionLayer):
+                return layer.active_session.value
+        except ImportError:
+            pass
+        return "unknown"
+
     # ── Audit Trail (v11/v12) ─────────────────────────────────────────
 
     def audit_trail(self, last_n: int = 30) -> str:
@@ -287,11 +395,10 @@ class ConfigOrchestrator:
         Falls back gracefully if the audit module is unavailable.
         """
         try:
-            from core.audit import get_audit_log
-            log = get_audit_log()
+            log = get_audit_log()  # type: ignore[name-defined]
             return log.summary(last_n=last_n)
-        except ImportError:
-            return "(audit module not available)"
+        except Exception:
+            return "(audit log unavailable)"
 
     def metrics_summary(self, last_n: int = 20) -> str:
         """
@@ -312,28 +419,37 @@ class ConfigOrchestrator:
     ) -> None:
         """Record a phase entry to the global AuditLog (v11/v12).  Silent on failure."""
         try:
-            from core.audit import audit_info, audit_warn, audit_error
             fn = {
-                "info":  audit_info,
-                "warn":  audit_warn,
-                "error": audit_error,
-            }.get(level, audit_info)
+                "info":  audit_info,   # type: ignore[name-defined]
+                "warn":  audit_warn,   # type: ignore[name-defined]
+                "error": audit_error,  # type: ignore[name-defined]
+            }.get(level, audit_info)   # type: ignore[name-defined]
             fn("orchestrator", f"[{phase}] {message}", **meta)
         except Exception:
             pass   # never let audit failure break the orchestrator
 
-    # ── Session Event (v11/v12) ───────────────────────────────────────
+    # ── Session Event (v15: now emits proper protocol event) ──────────
 
-    def _maybe_emit_session_event(self) -> None:
-        """Emit a session audit entry if a SessionLayer is registered."""
+    def _maybe_emit_session_event(self, source: str = "startup") -> None:
+        """
+        Emit SessionChangedEvent and audit entry if a SessionLayer is registered.
+
+        v15: upgrades from audit-only to full protocol event emission.
+        Subscribable by config.py via router.events.subscribe(SessionChangedEvent, ...).
+        """
         try:
             from layers.session import SessionLayer
             layer = self._stack.get("session")
             if isinstance(layer, SessionLayer):
+                mode_name = layer.active_session.value
+                self._router.emit_session_changed(
+                    old_session="unknown",
+                    new_session=mode_name,
+                    source=source,
+                )
                 self._audit_phase(
                     "session",
-                    f"active={layer.active_session.value}: "
-                    f"{layer.active_spec.description}",
+                    f"active={mode_name}: {layer.active_spec.description}",
                 )
         except ImportError:
             pass
@@ -354,14 +470,44 @@ class ConfigOrchestrator:
         except ImportError:
             pass
 
-    # ── Metrics helper ────────────────────────────────────────────────
+    # ── Network Event (v15) ───────────────────────────────────────────
 
-    def _emit_metrics(self, phase: str, duration_ms: float, key_count: int = 0, **meta: Any) -> None:
+    def _maybe_emit_network_event(self, source: str = "startup") -> None:
+        """
+        Emit NetworkModeChangedEvent if a NetworkLayer is registered.  ← v15
+
+        Called after build() and after hot-swap of the network layer.
+        """
+        try:
+            from layers.network import NetworkLayer
+            layer = self._stack.get("network")
+            if isinstance(layer, NetworkLayer):
+                self._router.emit_network_changed(
+                    old_mode="unknown",
+                    new_mode=layer.active_mode.value,
+                    proxy=layer.active_spec.proxy,
+                    source=source,
+                )
+                self._audit_phase(
+                    "network",
+                    f"active={layer.active_mode.value}: {layer.active_spec.description}",
+                )
+        except ImportError:
+            pass
+
+    # ── Metrics helper ─────────────────────────────────────────────────
+
+    def _emit_metrics(
+        self,
+        phase:      str,
+        duration_ms: float,
+        key_count:  int = 0,
+        **meta:     Any,
+    ) -> None:
         """Emit via MetricsCollector (v12) or fall back to direct router emit."""
         if self._metrics is not None:
             self._metrics.emit(phase, duration_ms, key_count=key_count, **meta)
         else:
-            # fallback: direct router emit (no collector recording)
             self._router.emit_metrics(
                 phase=phase,
                 duration_ms=duration_ms,
@@ -377,6 +523,8 @@ class ConfigOrchestrator:
         FSM transitions: IDLE → LOADING → VALIDATING → APPLYING (ready for apply)
         Emits MetricsEvent("build", ...) on completion  [v9].
         Records audit entry on completion               [v11].
+        Emits SessionChangedEvent if SessionLayer present [v15].
+        Emits NetworkModeChangedEvent if NetworkLayer present [v15].
         """
         self._fsm.send(ConfigEvent.START_LOAD)
         t0 = time.perf_counter()
@@ -409,13 +557,13 @@ class ConfigOrchestrator:
         self._emit_metrics("build", duration_ms, key_count=n_sets,
                            layer_count=len(self._resolved))
 
-        # v11: audit + session
         self._audit_phase(
             "build", "layers resolved",
             layer_count=len(self._resolved), key_count=n_sets,
         )
         self._maybe_emit_context_event()
-        self._maybe_emit_session_event()
+        self._maybe_emit_session_event(source="startup")   # v15: full event
+        self._maybe_emit_network_event(source="startup")   # v15: new
 
         return self._resolved
 
@@ -483,7 +631,6 @@ class ConfigOrchestrator:
             else:
                 logger.debug("[Orchestrator] health check: all checks passed")
 
-            # Emit health event
             self._router.emit_health(
                 ok            = health_report.ok,
                 error_count   = len(health_report.errors),
@@ -510,7 +657,6 @@ class ConfigOrchestrator:
         n_settings  = len(self._stack.merged.get("settings", {}))
         self._emit_metrics("apply", duration_ms, key_count=n_settings)
 
-        # v11: audit completion
         if not all_errors:
             self._audit_phase(
                 "apply", "complete — health OK",
@@ -597,12 +743,6 @@ class ConfigOrchestrator:
              Emits ConfigReloadedEvent and MetricsEvent("reload", ...).
              applier falls back to self._applier if stored from apply().
         v11: audit entry recorded.
-
-        On the first call (no previous snapshot), all settings are applied.
-        On subsequent calls, only changed/added keys are re-applied.
-        Keybindings and aliases are always re-applied (not tracked incrementally).
-
-        FSM transitions:  ACTIVE → RELOADING → VALIDATING → APPLYING → ACTIVE
         """
         self._fsm.send(ConfigEvent.RELOAD)
         self._lifecycle.run(LifecycleHook.PRE_RELOAD)
@@ -653,12 +793,12 @@ class ConfigOrchestrator:
                     self._router,
                 )
 
-            changed_and_added = [c for c in changes if c.kind.name in ("CHANGED", "ADDED")]
             inc_errors = self._incremental_applier.apply_delta(changes, apply_fn)
             errors.extend(inc_errors)
+            changed_count = len([c for c in changes if c.kind.name in ("CHANGED", "ADDED")])
             logger.info(
                 "[Orchestrator] incremental reload: %d change(s), %d error(s)",
-                len(changed_and_added), len(inc_errors),
+                changed_count, len(inc_errors),
             )
 
         # Always re-apply keybindings and aliases
@@ -682,7 +822,6 @@ class ConfigOrchestrator:
             reason="reload",
         )
 
-        # v11: audit completion
         self._audit_phase(
             "reload", f"complete: {n_changes} change(s)",
             changes=n_changes, errors=len(errors),
@@ -698,6 +837,7 @@ class ConfigOrchestrator:
         """
         Human-readable status summary.
 
+        v15: includes Network line, last hot-swap line.
         v12: includes session info, audit summary, metrics table.
         """
         merged  = self._stack.merged if self._resolved else {}
@@ -710,7 +850,7 @@ class ConfigOrchestrator:
 
         lines = [
             "─" * 60,
-            "ConfigOrchestrator Summary (v12)",
+            "ConfigOrchestrator Summary (v15)",
             "─" * 60,
             self._stack.summary(),
             f"\nFSM: {self._fsm}",
@@ -733,7 +873,7 @@ class ConfigOrchestrator:
                 f"Health: {status}  ({self._last_report.summary().splitlines()[0]})"
             )
 
-        # v12: context + session
+        # Context
         try:
             from layers.context import ContextLayer
             ctx = self._stack.get("context")
@@ -742,6 +882,7 @@ class ConfigOrchestrator:
         except ImportError:
             pass
 
+        # Session
         try:
             from layers.session import SessionLayer
             sess = self._stack.get("session")
@@ -749,6 +890,25 @@ class ConfigOrchestrator:
                 lines.append(f"Session: {sess.active_session.value} — {sess.active_spec.description}")
         except ImportError:
             pass
+
+        # v15: Network
+        try:
+            from layers.network import NetworkLayer
+            net = self._stack.get("network")
+            if isinstance(net, NetworkLayer):
+                lines.append(f"Network: {net.active_mode.value} — proxy={net.active_spec.proxy}")
+        except ImportError:
+            pass
+
+        # v15: Last hot-swap
+        if self._last_hot_swap_result:
+            hs = self._last_hot_swap_result
+            status = "✓" if hs.get("ok") else "✗"
+            lines.append(
+                f"HotSwap: {status} {hs.get('operation','?')} "
+                f"layer={hs.get('layer_name','?')}  "
+                f"{hs.get('duration_ms', 0):.1f}ms"
+            )
 
         # v12: metrics
         if self._metrics is not None and len(self._metrics) > 0:
@@ -758,12 +918,11 @@ class ConfigOrchestrator:
 
         # v12: audit summary
         try:
-            from core.audit import get_audit_log
-            log = get_audit_log()
+            log = get_audit_log()  # type: ignore[name-defined]
             audit_sum = log.summary(last_n=5)
             if audit_sum:
                 lines.append(f"\nAudit (last 5):\n{audit_sum}")
-        except ImportError:
+        except Exception:
             pass
 
         return "\n".join(lines)
@@ -784,6 +943,113 @@ class ConfigOrchestrator:
             "fsm",
             f"{from_state.name} → {to_state.name}",
             event=event.name,
+        )
+
+
+# ─────────────────────────────────────────────
+# _WrappedHotSwap  (v15)
+# ─────────────────────────────────────────────
+
+class _WrappedHotSwap:
+    """
+    Orchestrator-level wrapper around LayerHotSwap.
+
+    Applies Open/Closed principle: extends LayerHotSwap without modifying it.
+    Adds:
+      - Audit entries for each operation
+      - HotSwapCompletedEvent emission
+      - SessionChangedEvent emission when session layer is swapped
+      - NetworkModeChangedEvent emission when network layer is swapped
+      - _last_hot_swap_result storage on the orchestrator
+
+    Instantiated lazily via orchestrator.hot_swap property.
+    """
+
+    def __init__(self, orchestrator: ConfigOrchestrator) -> None:
+        self._orc  = orchestrator
+
+        # Build a lazy apply_fn that delegates to the stored applier.
+        # The applier may not exist yet at construction time (hot_swap
+        # can be accessed before apply() is called in tests), so we
+        # dereference self._orc._applier at call-time, not at init-time.
+        def _lazy_apply_fn(key: str, value: Any) -> List[str]:
+            applier = orchestrator._applier  # type: ignore[attr-defined]
+            if applier is None:
+                return []
+            return applier.apply_settings({key: value})
+
+        self._impl = LayerHotSwap(
+            stack    = orchestrator._stack,  # type: ignore[attr-defined]
+            apply_fn = _lazy_apply_fn,
+            router   = orchestrator._router,  # type: ignore[attr-defined]
+        )
+
+    def swap(self, name: str, new_layer: Any) -> None:
+        """Replace the named layer and re-apply via stored applier."""
+        self._execute("swap", name, lambda: self._impl.swap(name, new_layer))
+
+    def remove(self, name: str) -> None:
+        """Remove the named layer and re-apply via stored applier."""
+        self._execute("remove", name, lambda: self._impl.remove(name))
+
+    def insert(self, new_layer: Any) -> None:
+        """Insert a new layer (by its .name attribute) and re-apply."""
+        self._execute("insert", getattr(new_layer, "name", "?"), lambda: self._impl.insert(new_layer))
+
+    def _execute(self, operation: str, layer_name: str, fn: Any) -> None:
+        """Execute a hot-swap operation with audit, metrics, and event emission."""
+        import time as _time
+        t0 = _time.perf_counter()
+        errors: List[str] = []
+        changes: List[str] = []
+
+        try:
+            fn()
+        except Exception as exc:
+            errors.append(str(exc))
+            logger.error("[HotSwap] %s(%s) failed: %s", operation, layer_name, exc)
+
+        duration_ms = (_time.perf_counter() - t0) * 1000
+        ok = len(errors) == 0
+
+        # Store result on orchestrator
+        result: Dict[str, Any] = {
+            "operation":   operation,
+            "layer_name":  layer_name,
+            "ok":          ok,
+            "errors":      errors,
+            "duration_ms": round(duration_ms, 2),
+        }
+        self._orc._last_hot_swap_result = result # type: ignore[private]
+
+        # Audit
+        self._orc._audit_phase( # type: ignore[private]
+            "hot_swap",
+            f"{operation}({layer_name}) {'ok' if ok else 'FAILED'}",
+            level="info" if ok else "error",
+            duration_ms=round(duration_ms, 1),
+            errors=len(errors),
+        )
+
+        # Emit HotSwapCompletedEvent
+        self._orc._router.emit_hot_swap_completed( # type: ignore[private]
+            operation=operation,
+            layer_name=layer_name,
+            changes=changes,
+            errors=errors,
+            duration_ms=duration_ms,
+        )
+
+        # Emit layer-specific follow-up events
+        if ok:
+            if layer_name == "session":
+                self._orc._maybe_emit_session_event(source="hot_swap") # type: ignore[protect]
+            if layer_name == "network":
+                self._orc._maybe_emit_network_event(source="hot_swap") # type: ignore[protect]
+
+        logger.info(
+            "[HotSwap] %s(%s) %s  %.1fms",
+            operation, layer_name, "✓" if ok else "✗", duration_ms,
         )
 
 

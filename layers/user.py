@@ -35,6 +35,25 @@ search_engines merge semantics:
   Set search_engines_merge=False to REPLACE the entire engine map entirely
   (UserLayer writes the full set; lower-layer engines are discarded).
 
+v14 changes:
+  - Added ``dark_mode`` constructor parameter:
+      "off" | "simple" | "mediumLight" | "aggressive" (qutebrowser color scheme inversion).
+      None → keep AppearanceLayer default (no forced inversion).
+      Maps to ``colors.webpage.darkmode.enabled`` + ``colors.webpage.darkmode.algorithm``.
+  - Added ``pdf_viewer`` constructor parameter:
+      True  → use built-in PDF.js viewer  (content.pdfjs = True)
+      False → download PDFs               (content.pdfjs = False)
+      None  → keep base default (True / built-in viewer).
+  - Added ``new_tab_page`` constructor parameter:
+      URL string for url.default_page (separate from url.start_pages).
+      None → keep start_pages[0] fallback or "about:blank".
+      Example: "https://start.duckduckgo.com"
+  - Added ``tab_bar_padding`` constructor parameter:
+      dict with "top" / "bottom" / "left" / "right" int keys.
+      Maps to ``tabs.padding``.  None → keep default.
+  - Fixed: ``_validate_choice`` now resolves ``_log`` correctly at module
+    scope, avoiding repeated logger-name lookup per call.
+
 v9 changes:
   - Added ``tabs_position`` constructor parameter: one of "top", "bottom",
     "left", "right". None = keep default (AppearanceLayer / base).
@@ -79,7 +98,7 @@ Strict-mode: all params typed; injected collections are defensively copied.
 from __future__ import annotations
 
 import logging
-from typing import List, Optional, FrozenSet
+from typing import Dict, List, Optional, FrozenSet
 
 from core.types import ConfigDict, Keybind
 from core.layer import BaseConfigLayer
@@ -105,6 +124,20 @@ def _parse_size_to_int(size_str: str) -> int:
             s = s[: -len(suffix)].strip()
             break
     return int(s)
+
+
+# ─────────────────────────────────────────────
+# Dark mode algorithm constants
+# ─────────────────────────────────────────────
+
+_DARK_MODE_ALGORITHMS: Dict[str, str] = {
+    "off":         "",       # sentinel — disable darkmode entirely
+    "simple":      "InvertBrightness",
+    "mediumLight": "InvertLightness",
+    "aggressive":  "InvertLightness",   # same algorithm; enable for all pages
+}
+
+_VALID_DARK_MODES: FrozenSet[str] = frozenset(_DARK_MODE_ALGORITHMS)
 
 
 class UserLayer(BaseConfigLayer):
@@ -145,6 +178,25 @@ class UserLayer(BaseConfigLayer):
                              None → keep base default.
         statusbar_show:      Statusbar visibility: "always" | "never" | "in-mode".
                              None → keep base default.
+        dark_mode:           Dark mode algorithm for web content rendering.  ← v14
+                             "off"         → disable darkmode (default)
+                             "simple"      → InvertBrightness (most compatible)
+                             "mediumLight" → InvertLightness (smoother)
+                             "aggressive"  → InvertLightness on ALL pages
+                             None          → keep lower-layer default (off).
+        pdf_viewer:          True → use built-in PDF.js viewer.              ← v14
+                             False → download PDFs to disk.
+                             None → keep BaseLayer default (True).
+                             Maps to content.pdfjs.
+        new_tab_page:        URL opened by :open -t / Ctrl+T new tab.        ← v14
+                             e.g. "https://start.duckduckgo.com"
+                             None → keep start_pages[0] or "about:blank".
+                             Maps to url.default_page (separate from start_pages).
+        tab_bar_padding:     Pixel padding inside each tab.                  ← v14
+                             dict with keys "top", "bottom", "left", "right" (int).
+                             e.g. {"top": 0, "bottom": 0, "left": 5, "right": 5}
+                             None → keep AppearanceLayer/theme default.
+                             Maps to tabs.padding.
         extra_settings:      Arbitrary additional qutebrowser settings (escape hatch).
         extra_bindings:      Arbitrary additional keybindings [(key, cmd, mode), ...].
         extra_aliases:       Arbitrary additional command aliases {name: command}.
@@ -173,6 +225,10 @@ class UserLayer(BaseConfigLayer):
         font_size_web:        Optional[str]         = None,
         tabs_position:        Optional[str]         = None,
         statusbar_show:       Optional[str]         = None,
+        dark_mode:            Optional[str]         = None,   # v14
+        pdf_viewer:           Optional[bool]        = None,   # v14
+        new_tab_page:         Optional[str]         = None,   # v14
+        tab_bar_padding:      Optional[Dict[str, int]] = None, # v14
         extra_settings:       Optional[ConfigDict]  = None,
         extra_bindings:       Optional[List[Keybind]] = None,
         extra_aliases:        Optional[ConfigDict]  = None,
@@ -195,6 +251,30 @@ class UserLayer(BaseConfigLayer):
         self._statusbar_show = self._validate_choice(
             statusbar_show, self._VALID_STATUSBAR_MODES, "statusbar_show"
         )
+        # v14 — dark mode
+        self._dark_mode = self._validate_choice(
+            dark_mode, _VALID_DARK_MODES, "dark_mode", case_sensitive=True
+        )
+        # v14 — pdf viewer
+        self._pdf_viewer      = pdf_viewer   # None | True | False
+        # v14 — new tab page
+        self._new_tab_page    = new_tab_page.strip() if new_tab_page else None
+        # v14 — tab bar padding (copy dict; validate key names)
+        self._tab_bar_padding: Optional[Dict[str, int]] = None
+        if tab_bar_padding is not None:
+            valid_keys = {"top", "bottom", "left", "right"}
+            filtered   = {
+                k: v for k, v in tab_bar_padding.items()
+                if k in valid_keys and isinstance(v, int)  # type: ignore
+            }
+            if filtered:
+                self._tab_bar_padding = filtered
+            else:
+                logger.warning(
+                    "[UserLayer] tab_bar_padding ignored: no valid keys found in %r",
+                    tab_bar_padding,
+                )
+
         self._extra_settings       = dict(extra_settings)   if extra_settings   else {}
         self._extra_bindings       = list(extra_bindings)   if extra_bindings   else []
         self._extra_aliases        = dict(extra_aliases)    if extra_aliases    else {}
@@ -237,19 +317,25 @@ class UserLayer(BaseConfigLayer):
         value: Optional[str],
         valid: FrozenSet[str],
         param: str,
+        *,
+        case_sensitive: bool = False,
     ) -> Optional[str]:
         """
         Validate a string against an allowed set.
         Returns the value if valid, None (with a logged warning) if not.
         None input is passed through unchanged.
+
+        Parameters
+        ----------
+        case_sensitive : when True, the value is compared as-is (useful for
+            camelCase qutebrowser API values such as dark_mode algorithms).
+            When False (default), the value is lowercased before comparison.
         """
-        import logging as _logging
-        _log = _logging.getLogger("qute.layers.user")
         if value is None:
             return None
-        v = value.strip().lower()
+        v = value.strip() if case_sensitive else value.strip().lower()
         if v not in valid:
-            _log.warning(
+            logger.warning(
                 "[UserLayer] %s=%r is not a valid value — "
                 "expected one of %s; parameter will be ignored.",
                 param, value, sorted(valid),
@@ -267,8 +353,17 @@ class UserLayer(BaseConfigLayer):
 
         # ── Start pages ───────────────────────────────────────────────────
         if self._start_pages is not None:
-            settings["url.start_pages"]  = self._start_pages
-            settings["url.default_page"] = self._start_pages[0] if self._start_pages else "about:blank"
+            settings["url.start_pages"] = self._start_pages
+            # new_tab_page overrides default_page if set (v14)
+            if self._new_tab_page is None:
+                settings["url.default_page"] = (
+                    self._start_pages[0] if self._start_pages else "about:blank"
+                )
+
+        # ── New tab page (v14) ─────────────────────────────────────────────
+        if self._new_tab_page is not None:
+            settings["url.default_page"] = self._new_tab_page
+            logger.debug("[UserLayer] new_tab_page: %r", self._new_tab_page)
 
         # ── Default zoom ──────────────────────────────────────────────────
         if self._zoom is not None:
@@ -291,17 +386,6 @@ class UserLayer(BaseConfigLayer):
         #   UserLayer supplies the *complete* engine dict.  Because UserLayer has
         #   priority=90 and _deep_merge replaces dict values when both layers
         #   provide the same dict key, the entire engine map is replaced.
-        #   (Dict recursion still happens, but UserLayer's full dict wins when
-        #   it provides every key.)
-        #
-        # Both cases use the same code path here — the distinction is in the
-        # *content* of self._search_engines:
-        #   merge=True  → caller provides a partial dict (deltas only)
-        #   merge=False → caller provides the full engine map
-        #
-        # This is the same mechanism as before, just documented correctly.
-        # The previous code had identical branches (both did the same thing),
-        # which was misleading but not a runtime bug.
         if self._search_engines is not None:
             settings["url.searchengines"] = self._search_engines
             logger.debug(
@@ -310,7 +394,6 @@ class UserLayer(BaseConfigLayer):
                 list(self._search_engines.keys()),
             )
             if not self._search_engines_merge:
-                # Log a reminder that replace mode discards base/context engines
                 logger.info(
                     "[UserLayer] search_engines_merge=False: base/context engines "
                     "will be overwritten by UserLayer (priority=90)"
@@ -321,12 +404,6 @@ class UserLayer(BaseConfigLayer):
             settings["spellcheck.languages"] = self._spellcheck_langs
 
         # ── Font overrides ───────────────────────────────────────────
-        # Prefer these over putting fonts in extra_settings — they are
-        # validated by FontFamilyCheck and give a clear parameter name.
-        #
-        # font_family → fonts.default_family  (string: "JetBrainsMono Nerd Font")
-        # font_size   → fonts.default_size    (string: "10pt" — UI chrome size)
-        # font_size_web → fonts.web.size.default (int: pixel size for web content)
         if self._font_family:
             settings["fonts.default_family"] = self._font_family
             logger.debug("[UserLayer] font_family: %r", self._font_family)
@@ -342,15 +419,39 @@ class UserLayer(BaseConfigLayer):
                 logger.warning("[UserLayer] font_size_web ignored: %s", exc)
 
         # ── Layout overrides ─────────────────────────────────────────
-        # First-class params for the two most commonly overridden layout keys.
-        # Both are validated at construction time; invalid values are silently
-        # skipped (logged as warning) — no crash.
         if self._tabs_position is not None:
             settings["tabs.position"] = self._tabs_position
             logger.debug("[UserLayer] tabs_position: %r", self._tabs_position)
         if self._statusbar_show is not None:
             settings["statusbar.show"] = self._statusbar_show
             logger.debug("[UserLayer] statusbar_show: %r", self._statusbar_show)
+
+        # ── Tab bar padding (v14) ─────────────────────────────────────────
+        if self._tab_bar_padding is not None:
+            settings["tabs.padding"] = self._tab_bar_padding
+            logger.debug("[UserLayer] tab_bar_padding: %r", self._tab_bar_padding)
+
+        # ── Dark mode (v14) ───────────────────────────────────────────────
+        if self._dark_mode is not None:
+            if self._dark_mode == "off":
+                settings["colors.webpage.darkmode.enabled"] = False
+                logger.debug("[UserLayer] dark_mode: disabled")
+            else:
+                algorithm = _DARK_MODE_ALGORITHMS.get(self._dark_mode, "InvertLightness")
+                settings["colors.webpage.darkmode.enabled"]   = True
+                settings["colors.webpage.darkmode.algorithm"] = algorithm
+                # aggressive: apply darkmode to all pages regardless of scheme
+                if self._dark_mode == "aggressive":
+                    settings["colors.webpage.darkmode.policy.page"] = "always"
+                logger.debug(
+                    "[UserLayer] dark_mode: %r → algorithm=%r",
+                    self._dark_mode, algorithm,
+                )
+
+        # ── PDF viewer (v14) ──────────────────────────────────────────────
+        if self._pdf_viewer is not None:
+            settings["content.pdfjs"] = self._pdf_viewer
+            logger.debug("[UserLayer] pdf_viewer: %r", self._pdf_viewer)
 
         # ── Extra settings (escape hatch) ─────────────────────────────────
         if self._extra_settings:

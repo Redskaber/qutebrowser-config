@@ -171,6 +171,54 @@ To see all bindings in the running browser: `:bind`
 
 ---
 
+### Session Switching (`,S` prefix) ← v11
+
+| Key   | Session | Description                              | Layer   |
+| ----- | ------- | ---------------------------------------- | ------- |
+| `,Sd` | day     | 08:00–18:00 standard working mode        | session |
+| `,Se` | evening | 18:00–22:00 wind-down (larger font, +5%) | session |
+| `,Sn` | night   | 22:00–06:00 low-light (larger font)      | session |
+| `,Sf` | focus   | Deep-work: hide chrome, no notifications | session |
+| `,Sc` | commute | Bandwidth-constrained: no images         | session |
+| `,Sp` | present | Screen-share/demo: large text, 125% zoom | session |
+| `,S0` | auto    | Auto-detect from local time              | session |
+| `,Si` | —       | Show current session in message bar      | session |
+
+Session mode persists in `~/.config/qutebrowser/.session`.  
+Override at startup: set `ACTIVE_SESSION` in `config.py` or `QUTE_SESSION` env var.
+
+---
+
+### Network Mode (`,N` prefix) ← v14/v15
+
+Controls the active network/proxy configuration. All modes are managed by
+`NetworkLayer` (priority=27). `UserLayer.proxy` (p=90) always wins if set.
+
+| Key   | Mode   | Proxy                       | DNS | Description                 | Layer   |
+| ----- | ------ | --------------------------- | --- | --------------------------- | ------- |
+| `,Nn` | direct | none                        | on  | No proxy; direct connection | network |
+| `,Ns` | system | system                      | on  | OS-level proxy (default)    | network |
+| `,N5` | socks5 | socks5://127.0.0.1:7897     | off | Clash/Verge SOCKS5 port     | network |
+| `,Nh` | http   | http://127.0.0.1:7890       | off | Clash/Verge HTTP port       | network |
+| `,Nt` | tor    | socks5://127.0.0.1:9050     | off | Tor — max anonymity         | network |
+| `,Ni` | —      | `config-info content.proxy` | —   | Show current proxy value    | network |
+
+> `,N*` bindings call `set content.proxy` for the current tab session.
+> They do **not** persist across qutebrowser restarts. To persist a mode, set
+> `NETWORK_MODE = "socks5"` (or similar) in `config.py`, or write the mode name
+> to `~/.config/qutebrowser/.network`.
+
+**Aliases:**
+
+| Alias  | Description                              |
+| ------ | ---------------------------------------- |
+| `:net` | Show active network mode and description |
+
+Network mode persists via `~/.config/qutebrowser/.network` file.  
+Override at startup: set `NETWORK_MODE` in `config.py` or `QUTE_NETWORK` env var.
+
+---
+
 ## Insert Mode
 
 | Key        | Command       | Layer    |
@@ -302,7 +350,11 @@ from layers.privacy import PrivacyLayer, PrivacyProfile
 from layers.user import UserLayer
 
 catalog = KeybindingCatalog.from_layers([
-    BaseLayer(), BehaviorLayer(), PrivacyLayer(), UserLayer()
+    BaseLayer(),
+    PrivacyLayer(PrivacyProfile.STANDARD),
+    NetworkLayer(),   # v14/v15
+    BehaviorLayer(),
+    UserLayer(),
 ])
 print(catalog.conflict_report())
 "
