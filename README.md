@@ -2,7 +2,7 @@
 
 > A principled, layered qutebrowser configuration — built like software, not a script.
 
-**450+ tests · 9 layers · 10 core modules · 4 strategy modules · 4 policy modules · 18+ themes · NixOS-ready**
+**455+ tests · 9 layers · 10 core modules · 4 strategy modules · 4 policy modules · 18+ themes · NixOS-ready**
 
 ---
 
@@ -74,6 +74,58 @@ Edit **only** the `CONFIGURATION SECTION` and `USER PREFERENCE SECTION` at the t
 | `USER_PDF_VIEWER`      | bool\|None | `None`     | PDF.js enable/disable ← **v14**   |
 | `USER_NEW_TAB_PAGE`    | str\|None  | `None`     | New tab URL ← **v14**             |
 | `USER_TAB_BAR_PADDING` | dict\|None | `None`     | Tab bar padding ← **v14**         |
+
+---
+
+## New in v17
+
+### Bug fix — accurate `old_context` in `ContextSwitchedEvent`
+
+Before v17, `ContextSwitchedEvent.old_context` was always `"default"` (hardcoded),
+even after the context had been hot-swapped to a different mode. This was the same
+class of bug fixed in v16 for `old_session` and `old_mode`.
+
+After v17, the orchestrator tracks `_active_context` and emits the actual previous
+context on every subsequent event:
+
+```python
+# Startup:  old_context="default" → new_context="work"
+# Hot-swap: old_context="work"    → new_context="research"  ← now correct
+```
+
+### New — `ContextSwitchedEvent` `source` field
+
+`ContextSwitchedEvent` gains a `source: str = "startup"` field, fully mirroring
+`SessionChangedEvent` (v15). The default means no existing code needs updating:
+
+```python
+# Now you can distinguish startup vs hot-swap:
+def _on_context_switched(e: Event) -> None:
+    if isinstance(e, ContextSwitchedEvent):
+        logger.info("[Context] context=%s  source=%s", e.new_context, e.source)
+```
+
+### New — `GetActiveContextQuery`
+
+```python
+context = router.ask(GetActiveContextQuery())
+# → "work" | "research" | "media" | "dev" | "writing" | "gaming" | "default"
+```
+
+Mirrors `GetActiveSessionQuery` (v15) and `GetActiveNetworkQuery` (v15). The three
+primary runtime-switchable subsystems now all have query parity.
+
+### New — `MessageRouter.emit_context_changed()`
+
+```python
+router.emit_context_changed(
+    old_context="default",
+    new_context="work",
+    source="hot_swap",
+)
+```
+
+Convenience helper parallel to `emit_session_changed()` and `emit_network_changed()`.
 
 ---
 

@@ -1,4 +1,4 @@
-# Extending the Configuration (v15)
+# Extending the Configuration (v17)
 
 This guide covers every extension point in the architecture.
 Read [ARCHITECTURE.md](ARCHITECTURE.md) first for design context.
@@ -22,7 +22,7 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) first for design context.
 13. [Using LayerHotSwap](#using-layerhotswap) ← v13
 14. [Using orchestrator.hot_swap](#using-orchestratorhot_swap) ← v15
 15. [Using NetworkLayer](#using-networklayer) ← v14/v15
-16. [Subscribing to Session/Network Events](#subscribing-to-sessionnetwork-events) ← v15
+16. [Subscribing to Context/Session/Network Events](#subscribing-to-contextsessionnetwork-events) ← v15/v17
 17. [Using ConfigValidator](#using-configvalidator) ← v13
 18. [Using the Audit System](#using-the-audit-system)
 19. [Using the Metrics System](#using-the-metrics-system)
@@ -756,9 +756,29 @@ mode name to `~/.config/qutebrowser/.network`.
 
 ---
 
-## Subscribing to Session/Network Events ← v15
+## Subscribing to Context/Session/Network Events ← v15/v17
 
-### SessionChangedEvent
+The three primary runtime-switchable subsystems all emit typed protocol events and
+support `GetActive*Query` introspection. The context subsystem gained full parity
+with session/network in v17.
+
+### ContextSwitchedEvent ← v17
+
+Emitted by the orchestrator after `build()` when a `ContextLayer` is active, and
+after hot-swap operations that affect the context layer. `old_context` now
+accurately reflects the previous mode (fixed in v17; previously always `"default"`).
+
+```python
+from core.protocol import ContextSwitchedEvent, Event
+
+def _on_context_switched(event: Event) -> None:
+    if isinstance(event, ContextSwitchedEvent):
+        print(f"Context: {event.old_context} → {event.new_context} ({event.source})")
+
+router.events.subscribe(ContextSwitchedEvent, _on_context_switched)
+```
+
+### SessionChangedEvent ← v15
 
 Emitted by the orchestrator after `build()` when a `SessionLayer` is active,
 and after hot-swap operations that affect the session layer.
@@ -773,7 +793,7 @@ def _on_session_changed(event: Event) -> None:
 router.events.subscribe(SessionChangedEvent, _on_session_changed)
 ```
 
-### NetworkModeChangedEvent
+### NetworkModeChangedEvent ← v15
 
 ```python
 from core.protocol import NetworkModeChangedEvent, Event
@@ -787,11 +807,27 @@ router.events.subscribe(NetworkModeChangedEvent, _on_network_changed)
 
 ### Querying current state
 
-```python
-from core.protocol import GetActiveSessionQuery, GetActiveNetworkQuery
+All three subsystems expose `GetActive*Query` handlers:
 
-session = router.ask(GetActiveSessionQuery())   # → "evening"
-proxy   = router.ask(GetActiveNetworkQuery())   # → "system"
+```python
+from core.protocol import (
+    GetActiveContextQuery,   # v17
+    GetActiveSessionQuery,   # v15
+    GetActiveNetworkQuery,   # v15
+)
+
+context = router.ask(GetActiveContextQuery())  # → "work"
+session = router.ask(GetActiveSessionQuery())  # → "evening"
+proxy   = router.ask(GetActiveNetworkQuery())  # → "system"
+```
+
+### Convenience emitters (for custom subsystems)
+
+```python
+# These mirror the pattern; use them when building hot-swap tooling:
+router.emit_context_changed(old_context="default", new_context="work",   source="hot_swap")
+router.emit_session_changed(old_session="unknown",  new_session="night",  source="startup")
+router.emit_network_changed(old_mode="system",      new_mode="socks5",   proxy="socks5://127.0.0.1:7897", source="hot_swap")
 ```
 
 ---

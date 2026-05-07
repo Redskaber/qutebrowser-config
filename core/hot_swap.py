@@ -264,16 +264,11 @@ class LayerHotSwap:
         """Replace existing layer or insert if not found."""
         if new_layer is None:
             raise ValueError("swap requires new_layer")
-        # Try to find and replace in-place
-        for record in self._stack._layers: # type: ignore[private]
-            if record.layer.name == name:
-                record.layer = new_layer   # type: ignore[misc]
-                self._stack._layers.sort(key=lambda r: r.layer.priority)  # type: ignore[protect]
-                logger.debug("[HotSwap] swapped layer %s", name)
-                return
-        # Not found: insert
-        logger.debug("[HotSwap] layer %s not found, inserting", name)
-        self._stack.register(new_layer)
+        swapped = self._stack.swap_layer(name, new_layer) # type: ignore[private]
+        if not swapped:
+            # Layer not found: insert instead
+            logger.debug("[HotSwap] layer %s not found, inserting", name)
+            self._stack.register(new_layer)
 
     def _do_remove(self, name: str) -> None:
         """Disable a layer by name."""

@@ -1,7 +1,7 @@
 """
 core/protocol.py
 ================
-Inter-Module Communication Protocol  (v15)
+Inter-Module Communication Protocol  (v17)
 
 Architecture:
   Publisher → EventBus → [Subscriber, ...]
@@ -16,24 +16,22 @@ Principles:
 
 Pattern: Event-Driven Architecture + CQRS (Command/Query Separation)
 
-v15 additions (this file):
+v17 additions (this file):
+  - ContextSwitchedEvent gains a ``source`` field (default "startup"),
+    mirroring SessionChangedEvent.  Now also tracks ``old_context`` accurately
+    (orchestrator uses _active_context tracker, as v16 did for session/network).
+  - GetActiveContextQuery()
+    → returns the current context mode name string (mirrors GetActiveSessionQuery).
+  - MessageRouter.emit_context_changed()  helper  [v17]
+    → convenience wrapper for ContextSwitchedEvent emission.
+
+v15 additions (retained):
   - SessionChangedEvent(old_session, new_session, source)
-    → emitted after build() when a SessionLayer is active; mirrors
-      ContextSwitchedEvent.  Provides runtime observability for session mode.
   - NetworkModeChangedEvent(old_mode, new_mode, proxy, source)
-    → emitted by orchestrator after build() and after hot-swap of NetworkLayer.
   - HotSwapCompletedEvent(operation, layer_name, changes, errors, duration_ms)
-    → emitted after any orchestrator-level LayerHotSwap operation.
-      .ok property: True when errors is empty.
-  - GetActiveNetworkQuery()
-    → returns the currently active proxy string (or 'system').
-  - GetHotSwapStatusQuery()
-    → returns the last hot-swap result as a Dict[str, Any].
-  - GetActiveSessionQuery()
-    → returns the current session mode name string.
-  - MessageRouter.emit_session_changed()  helper  [v15]
-  - MessageRouter.emit_network_changed()  helper  [v15]
-  - MessageRouter.emit_hot_swap_completed() helper [v15]
+  - GetActiveNetworkQuery(), GetHotSwapStatusQuery(), GetActiveSessionQuery()
+  - MessageRouter.emit_session_changed(), emit_network_changed(),
+    emit_hot_swap_completed()
 
 v12 additions (retained):
   - GetMetricsSummaryQuery(last_n)
@@ -142,9 +140,22 @@ class BindingRegisteredEvent(Event):
 
 @dataclass(frozen=True)
 class ContextSwitchedEvent(Event):
-    """Emitted when the active browsing context changes."""
+    """
+    Emitted when the active browsing context is established or changes.
+
+    v17: gains a ``source`` field and accurate ``old_context`` tracking,
+    mirroring the v16 fix for SessionChangedEvent / NetworkModeChangedEvent.
+    The orchestrator now tracks ``_active_context`` so ``old_context``
+    reflects the actual previous value instead of always being ``"default"``.
+
+    Fields:
+        old_context: previous context mode name (or "default" on startup)
+        new_context: newly active context mode name
+        source:      "startup" | "hot_swap" | "env" | "file" | "user_override"
+    """
     old_context: str = "default"
     new_context: str = "default"
+    source:      str = "startup"
 
 
 @dataclass(frozen=True)
@@ -453,6 +464,21 @@ class GetActiveSessionQuery(Query):
     pass
 
 
+@dataclass(frozen=True)
+class GetActiveContextQuery(Query):
+    """
+    Request the currently active context mode name.
+
+    Returns: str — context mode value (e.g. "default", "work", "research"),
+    or "default" if no ContextLayer is registered.
+
+    Mirrors GetActiveSessionQuery for the context subsystem.
+
+    Added in v17.
+    """
+    pass
+
+
 # ─────────────────────────────────────────────
 # Bus Handler Types
 # ─────────────────────────────────────────────
@@ -647,6 +673,7 @@ class MessageRouter:
       emit_session_changed()    → SessionChangedEvent         [v15]
       emit_network_changed()    → NetworkModeChangedEvent     [v15]
       emit_hot_swap_completed() → HotSwapCompletedEvent       [v15]
+      emit_context_changed()    → ContextSwitchedEvent        [v17]
     """
 
     def __init__(self) -> None:
@@ -797,4 +824,17 @@ class MessageRouter:
             changes=changes,
             errors=errors,
             duration_ms=duration_ms,
+        ))
+
+    def emit_context_changed(
+        self,
+        old_context: str,
+        new_context: str,
+        source:      str = "startup",
+    ) -> None:
+        """Emit a ContextSwitchedEvent when context mode is established or changes.  ← v17"""
+        self.emit(ContextSwitchedEvent(
+            old_context=old_context,
+            new_context=new_context,
+            source=source,
         ))

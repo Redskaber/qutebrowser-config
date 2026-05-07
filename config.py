@@ -1,7 +1,7 @@
 """
 config.py
 =========
-qutebrowser Configuration Entry Point  (v16)
+qutebrowser Configuration Entry Point  (v17)
 
 This is the **only** file qutebrowser loads directly.
 It is intentionally thin: it wires the architecture and delegates
@@ -23,7 +23,7 @@ Architecture wiring order:
   4. SessionLayer injected if session system is enabled (priority=55)  [v11]
   5. UserLayer injected last (priority=90)
   6. ConfigOrchestrator.build() → resolves layers, runs pipeline
-       → emits ContextSwitchedEvent
+       → emits ContextSwitchedEvent  (accurate old_context + source)  [v17]
        → emits SessionChangedEvent  [v15]
        → emits NetworkModeChangedEvent  [v14/v15]
   7. ConfigOrchestrator.apply() → writes to qutebrowser config API
@@ -38,7 +38,14 @@ Strict-mode notes (Pyright):
   - _orchestrator global declared in module scope (type: ignore) so :py
     console sessions can access orchestrator.hot_swap without re-building.
 
-v16 changes:
+v17 changes:
+  - _on_context_switched() subscriber updated to log source field.
+  - GetActiveContextQuery accessible via router.ask().
+  - Lifecycle message updated to v17.
+  - No other wiring changes; all v17 fixes are in orchestrator.py /
+    protocol.py.
+
+v16 changes (retained):
   - Lifecycle message updated to v16.
   - No other wiring changes; all v16 fixes are in orchestrator.py /
     pipeline.py / compose.py.
@@ -83,6 +90,7 @@ from core.lifecycle import LifecycleHook, LifecycleManager
 from core.protocol  import (
     ConfigErrorEvent,
     ConfigReloadedEvent,
+    ContextSwitchedEvent,           # v17: now has source field + accurate old_context
     Event,
     HealthReportReadyEvent,
     HotSwapCompletedEvent,
@@ -98,6 +106,7 @@ from core.protocol  import (
 from core.state     import ConfigStateMachine
 from core.types     import Keybind
 from orchestrator   import ConfigApplier, ConfigOrchestrator
+from core.strategy  import PolicyAction
 
 # ── Layer imports ─────────────────────────────────────────────────────────────
 from layers.appearance  import AppearanceLayer
@@ -424,27 +433,40 @@ class QutebrowserApplier(ConfigApplier):
         """
         Write every key/value pair to qutebrowser via ``config.set()``.
 
-        If a *policy_chain* is provided, each key is evaluated before writing:
-        a PolicyDeniedEvent is emitted (via router) and the key skipped when
-        the chain rejects it.
+        If a *policy_chain* is provided, each key is evaluated before writing.
+        ``PolicyDecision.action == DENY`` causes the key to be skipped and a
+        ``PolicyDeniedEvent`` to be emitted (via router).
+        ``PolicyDecision.action == MODIFY`` applies the modified value instead.
+        ``PolicyDecision.action == WARN`` logs a warning but still applies.
         """
         errors: List[str] = []
         for key, value in settings.items():
             # Policy gate (optional)
             if policy_chain is not None:
                 try:
-                    allowed, reason = policy_chain.evaluate(key, value)
-                    if not allowed:
-                        logger.debug("[Applier] DENY  key=%s  reason=%s", key, reason)
+                    decision = policy_chain.evaluate(key, value, {})
+                    if decision.action == PolicyAction.DENY:
+                        logger.debug(
+                            "[Applier] DENY  key=%s  reason=%s", key, decision.reason
+                        )
                         if router is not None:
                             try:
                                 from core.protocol import PolicyDeniedEvent
                                 router.emit(PolicyDeniedEvent(
-                                    key=key, reason=reason or "policy denied",
+                                    key=key, reason=decision.reason or "policy denied",
                                 ))
                             except Exception:
                                 pass
                         continue
+                    elif decision.action == PolicyAction.MODIFY:
+                        logger.debug(
+                            "[Applier] MODIFY  key=%s  reason=%s", key, decision.reason
+                        )
+                        value = decision.modified_value
+                    elif decision.action == PolicyAction.WARN:
+                        logger.warning(
+                            "[Applier] WARN  key=%s  reason=%s", key, decision.reason
+                        )
                 except Exception as exc:
                     logger.debug("[Applier] policy_chain.evaluate() error: %s", exc)
 
@@ -464,7 +486,7 @@ class QutebrowserApplier(ConfigApplier):
         errors: List[str] = []
         for entry in keybindings:
             try:
-                key, command, mode = entry   # type: ignore[misc]
+                key, command, mode = entry
                 self._config.bind(key, command, mode=mode)
             except (TypeError, ValueError) as exc:
                 msg = f"bind({entry!r}): bad format — {exc}"
@@ -598,7 +620,7 @@ def _build_orchestrator() -> ConfigOrchestrator:
 
     @lifecycle.decorator(LifecycleHook.POST_APPLY, priority=100)
     def _log_apply_done() -> None:
-        logger.info("✓ qutebrowser config applied successfully (v16)")
+        logger.info("✓ qutebrowser config applied successfully (v17)")
 
     @lifecycle.decorator(LifecycleHook.ON_ERROR, priority=10)
     def _log_error() -> None:
@@ -706,6 +728,14 @@ def _build_orchestrator() -> ConfigOrchestrator:
                 e.new_session, e.source,
             )
 
+    # v17: context switched — now has source field + accurate old_context
+    def _on_context_switched(e: Event) -> None:
+        if isinstance(e, ContextSwitchedEvent):
+            logger.info(
+                "[Context] context=%s  source=%s",
+                e.new_context, e.source,
+            )
+
     # ── Subscribe all observers ────────────────────────────────────────
     router.events.subscribe(LayerAppliedEvent,       _on_layer_applied)
     router.events.subscribe(ConfigErrorEvent,        _on_config_error)
@@ -718,6 +748,7 @@ def _build_orchestrator() -> ConfigOrchestrator:
     router.events.subscribe(NetworkModeChangedEvent, _on_network_changed)    # v14
     router.events.subscribe(HotSwapCompletedEvent,   _on_hot_swap_completed) # v14
     router.events.subscribe(SessionChangedEvent,     _on_session_changed)    # v15
+    router.events.subscribe(ContextSwitchedEvent,    _on_context_switched)   # v17
 
     return ConfigOrchestrator(
         stack         = stack,

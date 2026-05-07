@@ -265,7 +265,7 @@ class UserLayer(BaseConfigLayer):
             valid_keys = {"top", "bottom", "left", "right"}
             filtered   = {
                 k: v for k, v in tab_bar_padding.items()
-                if k in valid_keys and isinstance(v, int)  # type: ignore
+                if k in valid_keys and isinstance(v, int) # type: ignore[static always type]
             }
             if filtered:
                 self._tab_bar_padding = filtered
@@ -292,7 +292,7 @@ class UserLayer(BaseConfigLayer):
         """
         if proxy is None:
             return None
-        if not isinstance(proxy, str): # type: ignore
+        if not isinstance(proxy, str): # type: ignore[static always type]
             raise TypeError(
                 f"[UserLayer] content.proxy must be a str, got {type(proxy).__name__!r}.\n"
                 "  Valid examples: 'socks5://127.0.0.1:7897', 'http://127.0.0.1:7897', "

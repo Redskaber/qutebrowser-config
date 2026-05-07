@@ -446,7 +446,7 @@ class IncrementalApplier:
                     continue
                 try:
                     result: List[str] = apply_fn(change.key, change.new_value)
-                    if isinstance(result, list) and result: # type: ignore[runtime]
+                    if result:
                         all_errors.extend(result)
                         logger.warning(
                             "[IncrementalApplier] %s %s: %d error(s)",

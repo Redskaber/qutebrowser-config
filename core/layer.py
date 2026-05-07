@@ -145,6 +145,24 @@ class LayerStack:
                 return
         raise KeyError(f"Layer not found: {name}")
 
+    def swap_layer(self, name: str, new_layer: LayerProtocol) -> bool:
+        """
+        Replace the layer named *name* with *new_layer* in-place.
+
+        Keeps the record's ``enabled`` state and re-sorts by priority.
+        Returns True if the layer was found and replaced, False otherwise.
+
+        This is the preferred API for LayerHotSwap — it avoids direct
+        access to the internal ``_records`` list.
+        """
+        for record in self._records:
+            if record.layer.name == name:
+                record.layer = new_layer
+                self._records.sort(key=lambda r: r.layer.priority)
+                logger.debug("[LayerStack] swapped layer: %s", name)
+                return True
+        return False
+
     def resolve(self) -> Dict[str, ConfigPacket]:
         """
         Build and merge all enabled layers.

@@ -190,23 +190,25 @@ class EventFilter(EventBus):
 
     # ── Middleware registration ────────────────────────────────────────
 
-    def use(self, middleware: Middleware) -> "EventFilter":
+    def use(self, middleware: Middleware) -> EventFilter:
         """Append middleware to the chain.  Returns self for fluent chaining."""
         self._chain.append(middleware)
         return self
 
-    def prepend(self, middleware: Middleware) -> "EventFilter":
+    def prepend(self, middleware: Middleware) -> EventFilter:
         """Prepend middleware (runs first)."""
         self._chain.prepend(middleware)
         return self
 
     # ── EventBus interface — delegate subscription to wrapped bus ─────
 
-    def subscribe(self, event_type: type, handler: EventHandler) -> "EventFilter":  # type: ignore[override]
+    def subscribe(self, event_type: Type[Event], handler: EventHandler) -> EventFilter:
+        """Subscribe *handler* to *event_type* on the wrapped bus."""
         self._bus.subscribe(event_type, handler)
         return self
 
-    def subscribe_all(self, handler: EventHandler) -> "EventFilter":  # type: ignore[override]
+    def subscribe_all(self, handler: EventHandler) -> EventFilter:
+        """Subscribe *handler* to all events on the wrapped bus."""
         self._bus.subscribe_all(handler)
         return self
 

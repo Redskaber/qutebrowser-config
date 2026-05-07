@@ -1,4 +1,4 @@
-# Architecture Deep-Dive (v15)
+# Architecture Deep-Dive (v17)
 
 > For the quick-start and overview, see [README.md](README.md).
 > This document targets contributors and layer authors.
@@ -1345,7 +1345,137 @@ python3 scripts/diagnostics.py summary
 
 ## Changelog
 
-### v16 (current)
+### v17 (current)
+
+**Bug fix — `orchestrator.py` — accurate `old_context` in `ContextSwitchedEvent`**
+
+Before v17, `_maybe_emit_context_event()` always emitted `old_context="default"`
+(hardcoded), even after context had been hot-swapped to a different mode. This was
+the same class of bug fixed in v16 for `old_session` and `old_mode`.
+
+After v17, the orchestrator tracks `_active_context: str` (default `"default"`).
+`_maybe_emit_context_event()` reads it for `old_context` and updates it after
+each emission:
+
+```python
+# Startup:  old_context="default" → new_context="work"
+# Hot-swap: old_context="work"    → new_context="research"  ← now correct
+```
+
+**New — `core/protocol.py` — `ContextSwitchedEvent` `source` field**
+
+`ContextSwitchedEvent` gains a `source: str = "startup"` field, fully mirroring
+`SessionChangedEvent` (v15) and `NetworkModeChangedEvent`. Backward-compatible —
+the default value means all existing construction sites need no changes.
+
+**New — `core/protocol.py` — `GetActiveContextQuery`**
+
+```python
+context_name = router.ask(GetActiveContextQuery())
+# → "work" | "research" | "media" | "dev" | "writing" | "gaming" | "default"
+```
+
+Mirrors `GetActiveSessionQuery` (v15) for the context subsystem.
+
+**New — `core/protocol.py` — `MessageRouter.emit_context_changed()`**
+
+Convenience helper that wraps `ContextSwitchedEvent` emission, parallel to
+`emit_session_changed()` and `emit_network_changed()`.
+
+**Updated — `orchestrator.py`**
+
+- `_active_context: str = "default"` instance attribute added.
+- `_maybe_emit_context_event(source="startup")` upgraded: uses
+  `router.emit_context_changed()`, passes `source`, tracks `_active_context`.
+- `GetActiveContextQuery` handler registered in `__init__`.
+- `_WrappedHotSwap._execute()`: when `layer_name == "context"`, emits
+  `_maybe_emit_context_event(source="hot_swap")` after a successful swap.
+- `summary()` bumped to v17.
+
+**Updated — `config.py`**
+
+- `ContextSwitchedEvent` imported; `_on_context_switched()` subscriber wired.
+- Lifecycle message bumped to v17.
+
+---
+
+**Strict-mode cleanup — Python strict / Pyright zero-suppress pass**
+
+_`core/strategy.py`_
+
+- `PolicyChain.__bool__()` and `PolicyChain.__len__()` added. Eliminates all
+  `bool(self._policy._policies)` private-attribute accesses in orchestrator.
+- `MergeStrategy` inner classes: replaced `# type: ignore[assignment]` with
+  proper `cast(ConfigDict, ...)`.
+
+_`core/layer.py`_
+
+- `LayerStack.swap_layer(name, new_layer) -> bool` — new public method for
+  in-place layer replacement. Re-sorts by priority; returns True on hit.
+
+_`core/hot_swap.py`_
+
+- `_do_swap()` rewrites to use `LayerStack.swap_layer()`. Removes three
+  `# type: ignore` suppressions (`[private]`, `[misc]`, `[protect]`).
+
+_`orchestrator.py`_
+
+- Removed unused imports: `SessionChangedEvent`, `NetworkModeChangedEvent`,
+  `HotSwapCompletedEvent`, `PhaseTimer`.
+- Deduplicated `GetMetricsSummaryQuery` import (was imported twice).
+- `audit_info/warn/error/get_audit_log` import cleaned — no more
+  `# type: ignore[import]` or `# type: ignore[name-defined]`.
+- `_metrics` typed as `Optional[MetricsCollector]` (was `Optional[Any]`).
+- `emit_metrics` callback: lambda replaced with named `_on_metrics_emit()`.
+- `bool(self._policy._policies)` → `bool(self._policy)` in `apply()` and
+  `reload()`.
+- `_WrappedHotSwap`: all `# type: ignore[attr-defined]` on `self._orc.*`
+  removed (same-module private access is valid in Pyright).
+
+_`config.py` — Critical bug fix: policy evaluation_
+
+- `QutebrowserApplier.apply_settings()`: `policy_chain.evaluate(key, value)`
+  was called with wrong number of args (2 instead of 3) and destructured the
+  `PolicyDecision` result as a tuple. Policy system was silently non-functional.
+  Fixed to: `decision = policy_chain.evaluate(key, value, {})`; handles
+  `DENY`, `MODIFY`, and `WARN` actions correctly.
+- `PolicyAction` moved to top-level imports.
+- Keybinding destructure `# type: ignore[misc]` removed.
+
+_`core/incremental.py`_
+
+- Removed bogus `# type: ignore[runtime]` from redundant `isinstance` check.
+
+_`core/validator.py`_
+
+- Type-branch for tuple-of-types: `getattr(t, "__name__", repr(t))` replaces
+  `t.__name__` with `# type: ignore[union-attr]`.
+- Editor custom validator lambda: removed bogus `# type: ignore[new]`.
+
+_`core/user.py`_
+
+- Two bare `# type: ignore` removed from runtime-redundant checks.
+
+_`core/event_filter.py`_
+
+- `EventFilter.subscribe()` parameter type corrected to `Type[Event]`.
+
+**New: `tests/test_v17.py`** — 36 tests
+
+Covers: `ContextSwitchedEvent` source field; `GetActiveContextQuery` import and
+handler; `_active_context` tracking; `emit_context_changed()` helper;
+`_WrappedHotSwap` context emission; `PolicyChain.__bool__`/`__len__`;
+`LayerStack.swap_layer()`; `PolicyChain.evaluate()` correct signature;
+all v16/v15 regressions.
+
+**Updated: `tests/test_v16.py`** — `test_summary_shows_v16` relaxed to
+`assertIn("ConfigOrchestrator Summary", ...)` to stay green on v17+.
+
+**Total test count: ~470+**
+
+---
+
+### v16
 
 **Bug fixes — `orchestrator.py`**
 

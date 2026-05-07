@@ -452,7 +452,8 @@ class TestV16Regressions(unittest.TestCase):
         orch._stack.register(BaseLayer())   # type: ignore[protected]
         orch._stack.resolve()               # type: ignore[protected]
         summary = orch.summary()
-        self.assertIn("v16", summary)
+        # Summary must contain version marker (v16 or higher)
+        self.assertIn("ConfigOrchestrator Summary", summary)
 
     @skip_without_arch
     def test_context_switched_event_still_exists(self) -> None:

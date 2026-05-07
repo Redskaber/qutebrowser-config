@@ -144,6 +144,13 @@ class PolicyChain:
         self._policies.sort(key=lambda p: p.priority)
         return self
 
+    def __bool__(self) -> bool:
+        """True when at least one policy is registered."""
+        return bool(self._policies)
+
+    def __len__(self) -> int:
+        return len(self._policies)
+
     def evaluate(self, key: str, value: Any, context: ConfigDict) -> PolicyDecision:
         for policy in self._policies:
             decision = policy.evaluate(key, value, context)
@@ -254,22 +261,22 @@ class MergeStrategy(Strategy[ConfigDict]):
     class LastWins(Strategy[ConfigDict]):
         name = "last_wins"
         def apply(self, context: ConfigDict) -> ConfigDict:
-            base:    ConfigDict = context.get("base", {})    # type: ignore[assignment]
-            overlay: ConfigDict = context.get("overlay", {}) # type: ignore[assignment]
+            base:    ConfigDict = cast(ConfigDict, context.get("base", {}))
+            overlay: ConfigDict = cast(ConfigDict, context.get("overlay", {}))
             return {**base, **overlay}
 
     class FirstWins(Strategy[ConfigDict]):
         name = "first_wins"
         def apply(self, context: ConfigDict) -> ConfigDict:
-            base:    ConfigDict = context.get("base", {})    # type: ignore[assignment]
-            overlay: ConfigDict = context.get("overlay", {}) # type: ignore[assignment]
+            base:    ConfigDict = cast(ConfigDict, context.get("base", {}))
+            overlay: ConfigDict = cast(ConfigDict, context.get("overlay", {}))
             return {**overlay, **base}
 
     class DeepMerge(Strategy[ConfigDict]):
         name = "deep_merge"
         def apply(self, context: ConfigDict) -> ConfigDict:
-            base:    ConfigDict = context.get("base", {})    # type: ignore[assignment]
-            overlay: ConfigDict = context.get("overlay", {}) # type: ignore[assignment]
+            base:    ConfigDict = cast(ConfigDict, context.get("base", {}))
+            overlay: ConfigDict = cast(ConfigDict, context.get("overlay", {}))
             return recursive_merge(base, overlay)
 
     # MergeStrategy itself is abstract; its inner classes are the concrete ones.

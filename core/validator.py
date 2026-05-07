@@ -205,11 +205,12 @@ class ConfigValidator:
         # Type check
         if spec.type_ is not None:
             if not isinstance(value, spec.type_):
-                expected = (
-                    spec.type_.__name__
-                    if isinstance(spec.type_, type)
-                    else " | ".join(t.__name__ for t in spec.type_)  # type: ignore[union-attr]
-                )
+                if isinstance(spec.type_, type):
+                    expected: str = spec.type_.__name__
+                else:
+                    expected = " | ".join(
+                        getattr(t, "__name__", repr(t)) for t in spec.type_
+                    )
                 issues.append(
                     f"{key!r}: expected {expected}, got {type(value).__name__}"
                 )
@@ -319,7 +320,8 @@ COMMON_SCHEMA: SchemaType = {
     "editor.command": FieldSpec(
         type_=list,
         custom=lambda v: (
-            None if (isinstance(v, list) and "{}" in " ".join(str(x) for x in v)) # type: ignore[new]
+            None
+            if isinstance(v, list) and "{}" in " ".join(str(x) for x in v) # type: ignore[unknown type]
             else "editor.command list must contain '{}' placeholder"
         ),
     ),
