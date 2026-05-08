@@ -95,7 +95,7 @@ class BaseLayer(BaseConfigLayer):
             # key in a multi-key sequence before resetting.  2000 ms gives
             # the user enough time to read the keyhint dialog.
             # CRITICAL for leader-key sequences: too low = hint flash bug.
-            "input.partial_timeout":                     2000,
+            "input.partial_timeout":                     3000,
             "input.spatial_navigation":                  False,
 
             # ── Keyhint (leader-key popup) ────────────────────────────
@@ -168,10 +168,11 @@ class BaseLayer(BaseConfigLayer):
             },
 
             # ── Hints ─────────────────────────────────────────────────
+            # hints.find_implementation intentionally OMITTED:
+            # Not supported by QtWebEngine backend — causes ERROR on reload.
             "hints.auto_follow":         "unique-match",
             "hints.auto_follow_timeout": 0,
             "hints.chars":               "asdfghjkl",
-            "hints.find_implementation": "python",
             "hints.mode":                "letter",
             "hints.scatter":             True,
             "hints.uppercase":           False,

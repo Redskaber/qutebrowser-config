@@ -239,7 +239,8 @@ def _default_session_file() -> str:
 
 def _read_session_file(path: str) -> Optional[str]:
     try:
-        raw = open(path).read().strip()
+        with open(path, encoding="utf-8") as f:
+            raw = f.read().strip()
         return raw if raw else None
     except OSError:
         return None

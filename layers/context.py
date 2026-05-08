@@ -298,7 +298,8 @@ def _read_context_file(path: str) -> Optional[str]:
     Returns None if the file is missing, empty, or unreadable.
     """
     try:
-        raw = open(path).read().strip()
+        with open(path, encoding="utf-8") as f:
+            raw = f.read().strip()
         return raw if raw else None
     except OSError:
         return None

@@ -1,7 +1,7 @@
 """
 layers/privacy.py
 =================
-Privacy & Security Layer  (v13)
+Privacy & Security Layer  (v18)
 
 Priority: 20
 
@@ -15,34 +15,33 @@ Responsibilities:
 This layer is intentionally opinionated: secure > convenient.
 Per-host exceptions belong in BehaviorLayer.host_policies().
 
-Profiles (Strategy axis):
+Profiles (Strategy pattern):
   STANDARD  — sane defaults, minimal site breakage
   HARDENED  — stronger protection; some authenticated sites may break
-  PARANOID  — maximum protection; JavaScript and images disabled; Tor proxy
+  PARANOID  — maximum protection; JS and images disabled; Tor proxy
 
-Keybinding namespace (priority=20, lower than behavior=40):
-  ,j  = toggle JavaScript   (privacy toggle)
-  ,i  = toggle images       (privacy toggle)
-  ,c  = cycle cookie policy (privacy toggle)
-  ,s  = force HTTPS reload  (privacy action)
+Keybinding namespace (EXCLUSIVE to this layer):
+  ,j  = toggle JavaScript     ,i  = toggle images
+  ,c  = cycle cookie policy   ,s  = force HTTPS reload
 
-  These four bindings are the privacy layer's exclusive namespace.
+  These FOUR keys are the privacy layer's hard ownership.
   BehaviorLayer (priority=40) does NOT define ,j / ,i / ,c / ,s.
-  If a user layer (priority=90) needs to override one, add it there.
 
-v13 changes:
-  - Added docstring clarifying ,j/,i/,c/,s ownership (prevents accidental
-    conflict with BehaviorLayer v12 refactor).
-  - ,p is no longer defined here — it was removed in v12 review.
-    Password manager userscripts are now ,Pa / ,Po in BehaviorLayer.
+  Cross-layer prefix rule: ,s is a TERMINAL — BehaviorLayer must NOT
+  register any ,s* sub-sequences (would block this terminal from firing).
+  This rule was violated in v17 (,sn/,sl) and fixed in v18 (removed).
 
-v12 fixes applied vs v11:
-  • Added ``leader`` constructor param so keybindings respect the configured
-    leader key instead of hard-coding ``","``
-  • ValidateStage now inspects ``data["settings"]`` (the nested structure that
-    BaseConfigLayer.build() produces) rather than the flat top-level dict
-  • Removed ``downloads.open_dispatcher: None`` (duplicate from base; None is
-    not a valid qutebrowser config value)
+v18 changes:
+  [ADD] message-info feedback on ,j / ,i / ,c so status bar confirms
+        what was toggled (useful with DEBUG_BINDINGS or just as UX).
+  [FIX] Docstring updated to reflect v18 cross-layer prefix rule.
+
+v13 changes (retained):
+  ,p removed from this layer (was OTP userscript — moved to BehaviorLayer).
+
+v12 fixes (retained):
+  leader= constructor param; ValidateStage inspects data["settings"];
+  removed downloads.open_dispatcher: None (not a valid config value).
 """
 
 from __future__ import annotations
@@ -56,19 +55,19 @@ from core.pipeline import LogStage, Pipeline, ValidateStage
 
 
 class PrivacyProfile(Enum):
-    """Selectable privacy levels."""
+    """Selectable privacy hardening levels."""
     STANDARD = auto()   # sane defaults, minimal breakage
-    HARDENED = auto()   # stronger protection, some sites may break
-    PARANOID = auto()   # maximum protection, expect breakage
+    HARDENED = auto()   # stronger protection; some sites may break
+    PARANOID = auto()   # maximum protection; expect significant breakage
 
 
 class PrivacyLayer(BaseConfigLayer):
     """
-    Privacy and security configuration.
+    Privacy and security configuration layer (priority=20).
 
     Args:
-        profile: One of ``PrivacyProfile.{STANDARD,HARDENED,PARANOID}``.
-        leader:  Leader key prefix used in keybindings (default ``","``).
+        profile: One of PrivacyProfile.{STANDARD,HARDENED,PARANOID}.
+        leader:  Leader key prefix (default ",").
     """
 
     name        = "privacy"
@@ -78,47 +77,41 @@ class PrivacyLayer(BaseConfigLayer):
     def __init__(
         self,
         profile: PrivacyProfile = PrivacyProfile.STANDARD,
-        leader: str = ",",
+        leader:  str            = ",",
     ) -> None:
         self._profile = profile
         self._leader  = leader
 
-    # ── Settings ──────────────────────────────────────────────────────
+    # ── Settings ─────────────────────────────────────────────────────────────
+
     def _settings(self) -> ConfigDict:
         base = self._standard_settings()
-
         if self._profile == PrivacyProfile.HARDENED:
             base.update(self._hardened_overlay())
         elif self._profile == PrivacyProfile.PARANOID:
             base.update(self._hardened_overlay())
             base.update(self._paranoid_overlay())
-
         return base
 
     def _standard_settings(self) -> ConfigDict:
         return {
-            # ── WebRTC ────────────────────────────────────────────────
+            # ── WebRTC ────────────────────────────────────────────────────────
             "content.webrtc_ip_handling_policy": "default-public-interface-only",
 
-            # ── TLS / HTTPS ───────────────────────────────────────────
+            # ── TLS / HTTPS ───────────────────────────────────────────────────
             "content.tls.certificate_errors": "ask",
 
-            # ── Referer ───────────────────────────────────────────────
+            # ── Referer ───────────────────────────────────────────────────────
             "content.headers.referer": "same-domain",
 
-            # ── Do-Not-Track ──────────────────────────────────────────
+            # ── Do-Not-Track ──────────────────────────────────────────────────
             "content.headers.do_not_track": True,
 
-            # ── Canvas fingerprinting ────────────────────────────────
-            # Note: this setting was removed in recent qutebrowser versions.
-            # Left commented to document intent; UserLayer can add it if needed.
-            # "content.canvas_reading": False,
-
-            # ── Third-party cookies ───────────────────────────────────
+            # ── Third-party cookies ───────────────────────────────────────────
             "content.cookies.accept": "no-3rdparty",
             "content.cookies.store":  True,
 
-            # ── Content blocking (ad + host filtering) ────────────────
+            # ── Content blocking (adblock + host-level) ───────────────────────
             "content.blocking.enabled": True,
             "content.blocking.method":  "both",
             "content.blocking.adblock.lists": [
@@ -133,7 +126,7 @@ class PrivacyLayer(BaseConfigLayer):
                 "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
             ],
 
-            # ── Cache ─────────────────────────────────────────
+            # ── Cache ─────────────────────────────────────────────────────────
             "content.cache.size": 0,   # let Chromium manage (~80 MB default)
         }
 
@@ -149,59 +142,55 @@ class PrivacyLayer(BaseConfigLayer):
 
     def _paranoid_overlay(self) -> ConfigDict:
         return {
-            "content.javascript.enabled":        False,
-            "content.images":                    False,
-            "content.media.audio_capture":       False,
-            "content.media.video_capture":       False,
-            "content.media.screen_capture":      False,
-            "content.cookies.accept":            "never",
-            "content.headers.accept_language":   "",
-            "content.proxy":                     "socks://localhost:9050",  # Tor
+            "content.javascript.enabled":      False,
+            "content.images":                  False,
+            "content.media.audio_capture":     False,
+            "content.media.video_capture":     False,
+            "content.media.screen_capture":    False,
+            "content.cookies.accept":          "never",
+            "content.headers.accept_language": "",
+            "content.proxy":                   "socks://localhost:9050",
         }
 
-    # ── Keybindings ───────────────────────────────────────────────────
+    # ── Keybindings ──────────────────────────────────────────────────────────
+
     def _keybindings(self) -> List[Keybind]:
         """
         Privacy-specific toggle bindings.
 
-        Namespace: ,j / ,i / ,c / ,s
-        These four are the privacy layer's exclusive scope.
-        BehaviorLayer (priority=40) deliberately avoids these keys.
+        Exclusive namespace: ,j / ,i / ,c / ,s
+        BehaviorLayer[40] must not touch these keys (cross-layer prefix rule).
 
-        Longest-match note:
-          ,s is a standalone binding.
-          ,sn / ,sl (session sub-commands) live in BehaviorLayer which has
-          HIGHER priority (40 > 20).  qutebrowser dispatches the highest-
-          priority match after partial_timeout.  Because ,sn / ,sl are
-          longer sequences, they take precedence when a third key follows.
-          If only ,s is pressed and the timeout expires, BehaviorLayer's
-          ,sn / ,sl are NOT triggered → PrivacyLayer's ,s fires.
-          There is no ambiguity.
+        message-info appended to ,j/,i/,c so the status bar confirms
+        what changed (useful during testing / DEBUG_BINDINGS=True sessions).
+        ,s navigates to the HTTPS version — the URL bar change is itself
+        sufficient feedback; no message-info needed.
         """
         L = self._leader
         return [
-            # Toggle JavaScript on/off for current domain context
-            (f"{L}j", "config-cycle content.javascript.enabled true false",         "normal"),
-            # Toggle image loading
-            (f"{L}i", "config-cycle content.images true false",                     "normal"),
-            # Cycle cookie acceptance policy
-            (f"{L}c", "config-cycle content.cookies.accept all no-3rdparty never",  "normal"),
-            # Force HTTPS reload (navigate to https:// version of current page)
-            (f"{L}s", "open https://{url:host}",                                    "normal"),
+            (f"{L}j",
+             "config-cycle content.javascript.enabled true false"
+             " ;; message-info 'JS toggled'",
+             "normal"),
+
+            (f"{L}i",
+             "config-cycle content.images true false"
+             " ;; message-info 'Images toggled'",
+             "normal"),
+
+            (f"{L}c",
+             "config-cycle content.cookies.accept all no-3rdparty never"
+             " ;; message-info 'Cookies cycled'",
+             "normal"),
+
+            (f"{L}s",
+             "open https://{url:host}",
+             "normal"),
         ]
 
-    # ── Pipeline (layer-level validation) ─────────────────────────────
+    # ── Layer-level validation pipeline ──────────────────────────────────────
+
     def pipeline(self) -> Pipeline:
-        """
-        Run a lightweight validation pass on the layer's output packet.
-
-        The packet produced by BaseConfigLayer.build() has structure::
-
-            {"settings": {"content.blocking.enabled": True, …}, …}
-
-        ValidateStage (fixed) inspects both ``packet.data`` and
-        ``packet.data["settings"]`` so the rules below work correctly.
-        """
         return (
             Pipeline("privacy")
             .pipe(LogStage("privacy-pre"))
@@ -216,7 +205,8 @@ class PrivacyLayer(BaseConfigLayer):
 
     def validate(self, data: ConfigDict) -> List[str]:
         errors: List[str] = []
-        settings = data.get("settings", data)  # tolerate flat or nested
-        if settings.get("content.javascript.enabled") and self._profile == PrivacyProfile.PARANOID:
+        settings = data.get("settings", data)
+        if (settings.get("content.javascript.enabled")
+                and self._profile == PrivacyProfile.PARANOID):
             errors.append("PARANOID profile should not enable JavaScript")
         return errors
