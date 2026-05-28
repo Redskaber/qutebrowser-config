@@ -101,7 +101,7 @@ from layers.session     import SessionLayer
 from layers.user        import UserLayer
 
 # ── Policy / host registry ────────────────────────────────────────────────────
-from policies.host import HostPolicyRegistry, build_default_host_registry  # type: ignore[import]
+from policies.host import build_default_host_registry  # type: ignore[import]
 
 # ── Theme registration ────────────────────────────────────────────────────────
 from themes.extended import register_all_themes
@@ -255,14 +255,17 @@ USER_FONT_SIZE_WEB: str | None = None   # e.g. "16px", "18px", or "16"
 USER_SPELLCHECK: list[str] | None = None
 
 # ── GitHub username ───────────────────────────────────────────────────────────
-USER_GITHUB: str = "redskaber"
+USER_GITHUB: str = "Redskaber"
 
 # ── Search engine overrides ───────────────────────────────────────────────────
 USER_SEARCH_ENGINES: dict[str, str] | None = {
-    "gpt":      "https://chatgpt.com/?{}",
-    "claude":   "https://claude.ai/new/?{}",
-    "deepseek": "https://chat.deepseek.com/?{}",
-    "bing":     "https://bing.com/?{}",
+    "gpt"   : "https://chatgpt.com/?{}",
+    "cla"   : "https://claude.ai/new/?{}",
+    "dp"    : "https://chat.deepseek.com/?{}",
+    "bi"    : "https://bing.com/?{}",
+    "gf"    : "https://greasyfork.org/?{}",
+    "gh"    : "https://github.com/Redskaber/?{}",
+    "bl"    : "https://bilibili.com/?{}",
 }
 USER_SEARCH_ENGINES_MERGE: bool = True
 
